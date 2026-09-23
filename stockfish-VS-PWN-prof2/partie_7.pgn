@@ -1,0 +1,9 @@
+[Event "?"]
+[Site "?"]
+[Date "????.??.??"]
+[Round "?"]
+[White "PWN (profondeur 2)"]
+[Black "Stockfish (Skill 0)"]
+[Result "1-0"]
+
+1. e4 c5 2. Nc3 d6 3. d4 Nd7 4. dxc5 Nxc5 5. Be3 Nd7 6. Nf3 Ngf6 7. Qd2 Qa5 8. O-O-O g6 9. Bb5 a6 10. Bc4 Qc7 11. Bb3 Nc5 12. Bxc5 Qxc5 13. e5 Nd7 14. Ne4 e6 15. Nxc5 Nxe5 16. Nxe5 Be7 17. Nxf7 Kxf7 18. Qf4+ Ke8 19. Nxe6 Ra7 20. Kb1 Rf8 21. Qb4 Rf6 22. Nc7+ Kf8 23. Rhe1 a5 24. Qb5 Ra6 25. h4 b6 26. Bc4 Bd8 27. Re8+ Kg7 28. Rg8+ Kh6 29. Qg5# 1-0

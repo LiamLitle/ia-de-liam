@@ -1,0 +1,9 @@
+[Event "?"]
+[Site "?"]
+[Date "????.??.??"]
+[Round "?"]
+[White "Stockfish (Skill 0)"]
+[Black "PWN (profondeur 2)"]
+[Result "1-0"]
+
+1. e4 e5 2. Bc4 Nf6 3. Nc3 Bb4 4. Qf3 O-O 5. Nge2 Nc6 6. a3 Bxc3 7. dxc3 Na5 8. Ba2 d5 9. b4 Bg4 10. Qd3 Nc4 11. h3 Bxe2 12. Kxe2 Nxe4 13. Bxc4 Qf6 14. Bxd5 Qxf2+ 15. Kd1 Rfd8 16. Qxe4 c6 17. Be3 Qg3 18. Rf1 cxd5 19. Qf3 Qg6 20. Kc1 Rac8 21. Bc5 b6 22. Be7 Rd7 23. Kb2 d4 24. Bh4 e4 25. Qg4 Qc6 26. Be1 h6 27. Rd1 dxc3+ 28. Kb1 f5 29. Qe2 Qb5 30. Qxb5 Rxd1+ 31. Ka2 g6 32. Rxf5 gxf5 33. Bf2 Rd2 34. Qf1 f4 35. Kb3 f3 36. gxf3 exf3 37. Qg1+ Kf7 38. Qg4 Rxf2 39. Qxc8 Kf6 40. Qxc3+ Kf5 41. Qc6 Rf1 42. Kc4 Kf4 43. Qg6 Rc1 44. Qxh6+ Ke5 45. Qe3+ Kf5 46. Qxc1 Kg6 47. Qe3 f2 48. Qxf2 b5+ 49. Kxb5 a6+ 50. Kxa6 Kh5 51. Qe3 Kg6 52. c4 Kf6 53. c5 Kf7 54. Kb5 Kf6 55. c6 Kg6 56. c7 Kf6 57. c8=Q Kg6 58. Kb6 Kf6 59. Kb7 Kg6 60. Qg8+ Kf5 61. Qge6# 1-0
