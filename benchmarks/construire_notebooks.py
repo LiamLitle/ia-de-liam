@@ -792,6 +792,14 @@ from sentence_transformers import SentenceTransformer
 import mteb
 from scipy.stats import spearmanr, pearsonr
 
+# jeton Hugging Face (facultatif) : sans lui, HF limite le nombre de requêtes (erreur 429)
+try:
+    from kaggle_secrets import UserSecretsClient
+    os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN")
+    print("HF_TOKEN chargé depuis les secrets Kaggle")
+except Exception:
+    print("pas de HF_TOKEN : risque d'erreurs 429 (trop de requêtes) sur Hugging Face")
+
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SORTIE = "/kaggle/working" if os.path.isdir("/kaggle/working") else "."
 print("device :", DEVICE, "| mteb", mteb.__version__)
