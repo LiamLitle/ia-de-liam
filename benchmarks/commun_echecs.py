@@ -130,8 +130,14 @@ class Evaluateur:
         res = []
         for i in range(0, len(fens), lot):
             x = np.frombuffer(b"".join(map(enc_fen, fens[i:i + lot])), np.uint8).reshape(-1, 69).copy()
+            n = len(x)
+            if self.sur_gpu and GPU_MEM_MO:
+                # taille de lot arrondie à une puissance de 2 : peu de formes différentes, donc
+                # onnxruntime réutilise ses blocs mémoire au lieu d'en allouer de nouveaux à chaque coup
+                taille = max(64, 1 << (n - 1).bit_length())
+                x = np.concatenate([x, np.zeros((taille - n, 69), np.uint8)]) if taille > n else x
             try:
-                res.append(self.session.run(None, {"board": x})[0])
+                res.append(self.session.run(None, {"board": x})[0][:n])
             except Exception as e:
                 if not self.sur_gpu:
                     raise
