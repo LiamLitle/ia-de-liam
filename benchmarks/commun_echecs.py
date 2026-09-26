@@ -51,6 +51,7 @@ def poids(chemin_depot):
     return dest
 
 
+GPU_ID = 0       # carte utilisée par ce processus (Kaggle « GPU T4 x2 » en a deux)
 GPU_MEM_MO = 0   # plafond mémoire GPU par réseau (0 = pas de plafond) ; fixé quand plusieurs processus partagent le GPU
 _CUDA_OK = None  # None = pas encore essayé, False = échec -> on reste sur CPU sans réessayer
 
@@ -65,7 +66,7 @@ def providers(gpu=True):
         # HEURISTIC : cuDNN choisit ses algos sans essayer ceux qui demandent d'énormes
         # zones de travail (sinon des blocs de 150 Mo dépassent le plafond mémoire)
         opts = {"arena_extend_strategy": "kSameAsRequested", "cudnn_conv_algo_search": "HEURISTIC",
-                "cudnn_conv_use_max_workspace": "0"}
+                "cudnn_conv_use_max_workspace": "0", "device_id": GPU_ID}
         if GPU_MEM_MO:
             opts["gpu_mem_limit"] = GPU_MEM_MO * 1024 * 1024
         return [("CUDAExecutionProvider", opts), "CPUExecutionProvider"]
@@ -125,7 +126,7 @@ class Evaluateur:
         if not fens:
             return np.zeros(0, dtype=np.float32)
         if self.sur_gpu and GPU_MEM_MO:
-            lot = min(lot, 1024)  # petits lots quand la mémoire GPU est plafonnée
+            lot = min(lot, 512)  # petits lots quand la mémoire GPU est plafonnée
         res = []
         for i in range(0, len(fens), lot):
             x = np.frombuffer(b"".join(map(enc_fen, fens[i:i + lot])), np.uint8).reshape(-1, 69).copy()
@@ -360,14 +361,27 @@ URLS_STOCKFISH = [
 ]
 
 
+def rendre_executable(binaire):
+    """/kaggle/working interdit d'exécuter des programmes : on copie Stockfish ailleurs
+    et on garde le premier emplacement où il démarre vraiment"""
+    for dest in ("/usr/local/bin/stockfish-pawn", "/tmp/stockfish-pawn", binaire):
+        try:
+            if dest != binaire:
+                shutil.copy(binaire, dest)
+            os.chmod(dest, 0o755)
+            subprocess.run([dest, "quit"], check=True, timeout=10, capture_output=True)
+            return dest
+        except Exception as e:
+            print("Stockfish ne démarre pas depuis", dest, ":", e)
+    raise RuntimeError("Stockfish ne peut être exécuté nulle part")
+
+
 def installer_stockfish(dossier=None):
     dossier = dossier or os.path.join(os.path.dirname(os.path.abspath(DOSSIER_POIDS)), "stockfish")
     deja = glob.glob(os.path.join(dossier, "**", "stockfish-ubuntu-*"), recursive=True)
     deja = [d for d in deja if os.path.isfile(d) and not d.endswith(".tar")]
     if deja:
-        # après un redémarrage de session le fichier peut avoir perdu son droit d'exécution
-        os.chmod(deja[0], os.stat(deja[0]).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-        return deja[0]
+        return rendre_executable(deja[0])
     os.makedirs(dossier, exist_ok=True)
     for url in URLS_STOCKFISH:
         try:
@@ -377,9 +391,7 @@ def installer_stockfish(dossier=None):
                 t.extractall(dossier)
             binaire = [d for d in glob.glob(os.path.join(dossier, "**", "stockfish-ubuntu-*"), recursive=True)
                        if os.path.isfile(d) and not d.endswith(".tar")][0]
-            os.chmod(binaire, os.stat(binaire).st_mode | stat.S_IEXEC)
-            subprocess.run([binaire, "quit"], check=True, timeout=10)
-            return binaire
+            return rendre_executable(binaire)
         except Exception as e:
             print("échec", url, e)
     if shutil.which("stockfish") is None:
@@ -452,11 +464,22 @@ def jouer_partie(blancs, noirs, ouverture, max_plies=300):
 
 # -- tâches pour ProcessPoolExecutor (doivent être importables depuis ce module) -------
 
-def init_worker(gpu, threads, sf_chemin=None, sf_temps=0.1, gpu_mem_mo=700):
-    # plusieurs processus x plusieurs réseaux sur un seul GPU : sans plafond, onnxruntime
-    # réserve la mémoire trop largement et le T4 sature (erreurs BFCArena / CUBLAS_STATUS_ALLOC_FAILED)
-    global GPU_MEM_MO
-    GPU_MEM_MO = gpu_mem_mo
+def nb_gpu():
+    try:
+        r = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=10)
+        return max(1, sum(l.startswith("GPU") for l in r.stdout.splitlines()))
+    except Exception:
+        return 1
+
+
+def init_worker(gpu, threads, sf_chemin=None, sf_temps=0.1, gpu_mem_mo=None):
+    # plusieurs processus x plusieurs réseaux sur un GPU : sans plafond, onnxruntime réserve
+    # la mémoire trop largement et le T4 sature (BFCArena / CUBLAS_STATUS_ALLOC_FAILED).
+    # Les processus sont répartis sur les GPU disponibles, avec un plafond par réseau.
+    global GPU_MEM_MO, GPU_ID
+    n = nb_gpu()
+    GPU_ID = os.getpid() % n
+    GPU_MEM_MO = gpu_mem_mo or (700 if n == 1 else 1200)
     configurer(gpu=gpu, threads=threads, sf_chemin=sf_chemin, sf_temps=sf_temps)
 
 
