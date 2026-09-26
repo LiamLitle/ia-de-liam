@@ -43,9 +43,10 @@ with open(os.path.join(ICI, "commun_echecs.py"), encoding="utf-8") as f:
     COMMUN = f.read()
 
 INSTALL_ECHECS = r'''
-# onnxruntime-gpu remplace onnxruntime (les deux ne cohabitent pas) ; marche aussi sans GPU
-!pip uninstall -y -q onnxruntime > /dev/null 2>&1
-!pip install -q chess onnxruntime-gpu zstandard
+# onnxruntime-gpu remplace onnxruntime (les deux ne cohabitent pas) ; marche aussi sans GPU.
+# Version fixée : les plus récentes demandent CUDA 13, Kaggle a CUDA 12. [cuda,cudnn] installe les bibliothèques CUDA 12.
+!pip uninstall -y -q onnxruntime onnxruntime-gpu > /dev/null 2>&1
+!pip install -q chess zstandard "onnxruntime-gpu[cuda,cudnn]==1.24.1"
 '''
 
 MODULE_ECHECS = "%%writefile commun_echecs.py\n" + COMMUN

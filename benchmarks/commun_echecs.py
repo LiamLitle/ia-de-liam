@@ -51,9 +51,12 @@ def poids(chemin_depot):
     return dest
 
 
+_CUDA_OK = None  # None = pas encore essayé, False = échec -> on reste sur CPU sans réessayer
+
+
 def providers(gpu=True):
     dispo = ort.get_available_providers()
-    if gpu and "CUDAExecutionProvider" in dispo:
+    if gpu and _CUDA_OK is not False and "CUDAExecutionProvider" in dispo:
         try:
             ort.preload_dlls()  # charge CUDA/cuDNN depuis les paquets pip nvidia-* (déjà là avec torch sur Kaggle)
         except Exception:
@@ -99,7 +102,14 @@ class Evaluateur:
         if threads:
             so.intra_op_num_threads = threads
             so.inter_op_num_threads = 1
-        self.session = ort.InferenceSession(poids(RESEAUX[nom]), so, providers=providers(gpu))
+        global _CUDA_OK
+        prov = providers(gpu)
+        self.session = ort.InferenceSession(poids(RESEAUX[nom]), so, providers=prov)
+        if "CUDAExecutionProvider" in prov:
+            _CUDA_OK = "CUDAExecutionProvider" in self.session.get_providers()
+            if not _CUDA_OK:
+                print("⚠️ GPU indisponible pour onnxruntime : on continue sur CPU (plus lent mais résultats identiques)")
+                ort.set_default_logger_severity(4)
         self.nb_evals = 0
         self.cache = {}
 
