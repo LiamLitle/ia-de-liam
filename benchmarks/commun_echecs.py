@@ -285,10 +285,11 @@ SF_CHEMIN = None
 SF_TEMPS = 0.1
 
 
-def evaluateur(nom):
-    if nom not in _EVALS:
-        _EVALS[nom] = Evaluateur(nom, gpu=GPU, threads=THREADS)
-    return _EVALS[nom]
+def evaluateur(nom, gpu=None):
+    gpu = GPU if gpu is None else gpu
+    if (nom, gpu) not in _EVALS:
+        _EVALS[(nom, gpu)] = Evaluateur(nom, gpu=gpu, threads=THREADS)
+    return _EVALS[(nom, gpu)]
 
 
 def configurer(gpu=True, threads=0, sf_chemin=None, sf_temps=0.1):
@@ -323,11 +324,12 @@ def coup(joueur, board):
     if joueur.startswith("SF@"):
         return stockfish(joueur[3:]).play(board, chess.engine.Limit(time=SF_TEMPS)).move
     nom, rech, depth = decoder(joueur)
-    ev = evaluateur(nom)
     b = board.copy(stack=True)
     if rech == "arbre":
-        return choisir_arbre(b, ev, depth)
-    return choisir_alphabeta(b, ev, depth)
+        return choisir_arbre(b, evaluateur(nom), depth)
+    # l'alpha-bêta évalue une position à la fois : sur Kaggle la latence CPU (~6 ms)
+    # est deux fois plus basse que celle du GPU (~14 ms), donc on reste sur CPU
+    return choisir_alphabeta(b, evaluateur(nom, gpu=False), depth)
 
 
 # -- Stockfish -------------------------------------------------------------------------
