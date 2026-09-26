@@ -51,6 +51,7 @@ def poids(chemin_depot):
     return dest
 
 
+GPU_MEM_MO = 0   # plafond mémoire GPU par réseau (0 = pas de plafond) ; fixé quand plusieurs processus partagent le GPU
 _CUDA_OK = None  # None = pas encore essayé, False = échec -> on reste sur CPU sans réessayer
 
 
@@ -61,7 +62,10 @@ def providers(gpu=True):
             ort.preload_dlls()  # charge CUDA/cuDNN depuis les paquets pip nvidia-* (déjà là avec torch sur Kaggle)
         except Exception:
             pass
-        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        opts = {"arena_extend_strategy": "kSameAsRequested"}
+        if GPU_MEM_MO:
+            opts["gpu_mem_limit"] = GPU_MEM_MO * 1024 * 1024
+        return [("CUDAExecutionProvider", opts), "CPUExecutionProvider"]
     return ["CPUExecutionProvider"]
 
 
@@ -98,15 +102,16 @@ class Evaluateur:
 
     def __init__(self, nom, gpu=True, threads=0):
         self.nom = nom
-        so = ort.SessionOptions()
+        self.so = ort.SessionOptions()
         if threads:
-            so.intra_op_num_threads = threads
-            so.inter_op_num_threads = 1
+            self.so.intra_op_num_threads = threads
+            self.so.inter_op_num_threads = 1
         global _CUDA_OK
         prov = providers(gpu)
-        self.session = ort.InferenceSession(poids(RESEAUX[nom]), so, providers=prov)
-        if "CUDAExecutionProvider" in prov:
-            _CUDA_OK = "CUDAExecutionProvider" in self.session.get_providers()
+        self.session = ort.InferenceSession(poids(RESEAUX[nom]), self.so, providers=prov)
+        self.sur_gpu = "CUDAExecutionProvider" in self.session.get_providers()
+        if prov[0] != "CPUExecutionProvider":
+            _CUDA_OK = self.sur_gpu
             if not _CUDA_OK:
                 print("⚠️ GPU indisponible pour onnxruntime : on continue sur CPU (plus lent mais résultats identiques)")
                 ort.set_default_logger_severity(4)
@@ -116,10 +121,21 @@ class Evaluateur:
     def evals(self, fens, lot=4096):
         if not fens:
             return np.zeros(0, dtype=np.float32)
+        if self.sur_gpu and GPU_MEM_MO:
+            lot = min(lot, 1024)  # petits lots quand la mémoire GPU est plafonnée
         res = []
         for i in range(0, len(fens), lot):
             x = np.frombuffer(b"".join(map(enc_fen, fens[i:i + lot])), np.uint8).reshape(-1, 69).copy()
-            res.append(self.session.run(None, {"board": x})[0])
+            try:
+                res.append(self.session.run(None, {"board": x})[0])
+            except Exception as e:
+                if not self.sur_gpu:
+                    raise
+                # GPU plein : ce réseau passe sur CPU pour la suite (mêmes résultats, plus lent)
+                print(f"⚠️ {self.nom} : erreur GPU ({str(e)[:80]}...) -> CPU")
+                self.session = ort.InferenceSession(poids(RESEAUX[self.nom]), self.so, providers=["CPUExecutionProvider"])
+                self.sur_gpu = False
+                res.append(self.session.run(None, {"board": x})[0])
         self.nb_evals += len(fens)
         return np.concatenate(res)
 
@@ -431,7 +447,11 @@ def jouer_partie(blancs, noirs, ouverture, max_plies=300):
 
 # -- tâches pour ProcessPoolExecutor (doivent être importables depuis ce module) -------
 
-def init_worker(gpu, threads, sf_chemin=None, sf_temps=0.1):
+def init_worker(gpu, threads, sf_chemin=None, sf_temps=0.1, gpu_mem_mo=700):
+    # plusieurs processus x plusieurs réseaux sur un seul GPU : sans plafond, onnxruntime
+    # réserve la mémoire trop largement et le T4 sature (erreurs BFCArena / CUBLAS_STATUS_ALLOC_FAILED)
+    global GPU_MEM_MO
+    GPU_MEM_MO = gpu_mem_mo
     configurer(gpu=gpu, threads=threads, sf_chemin=sf_chemin, sf_temps=sf_temps)
 
 
