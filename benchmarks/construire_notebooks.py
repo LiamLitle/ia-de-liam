@@ -499,6 +499,7 @@ tableau.round(2)
 fig, axes = plt.subplots(1, 2, figsize=(15, 5))
 par_tranche = res.groupby(["joueur", "tranche"], observed=True).resolu.mean().unstack(0) * 100
 par_tranche.index = [str(i.left) if hasattr(i, "left") else str(i).split(",")[0].strip("[") for i in par_tranche.index]
+par_tranche.to_csv(f"{SORTIE}/bench2_par_difficulte.csv", index_label="classement puzzle")
 par_tranche[[j for j in JOUEURS if j in par_tranche]].plot(ax=axes[0], marker="o")
 axes[0].set(xlabel="classement du puzzle", ylabel="résolus (%)", title="Taux de résolution par difficulté")
 axes[0].grid(alpha=.3)
