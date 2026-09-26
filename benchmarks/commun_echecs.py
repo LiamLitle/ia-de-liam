@@ -62,7 +62,10 @@ def providers(gpu=True):
             ort.preload_dlls()  # charge CUDA/cuDNN depuis les paquets pip nvidia-* (déjà là avec torch sur Kaggle)
         except Exception:
             pass
-        opts = {"arena_extend_strategy": "kSameAsRequested"}
+        # HEURISTIC : cuDNN choisit ses algos sans essayer ceux qui demandent d'énormes
+        # zones de travail (sinon des blocs de 150 Mo dépassent le plafond mémoire)
+        opts = {"arena_extend_strategy": "kSameAsRequested", "cudnn_conv_algo_search": "HEURISTIC",
+                "cudnn_conv_use_max_workspace": "0"}
         if GPU_MEM_MO:
             opts["gpu_mem_limit"] = GPU_MEM_MO * 1024 * 1024
         return [("CUDAExecutionProvider", opts), "CPUExecutionProvider"]
@@ -362,6 +365,8 @@ def installer_stockfish(dossier=None):
     deja = glob.glob(os.path.join(dossier, "**", "stockfish-ubuntu-*"), recursive=True)
     deja = [d for d in deja if os.path.isfile(d) and not d.endswith(".tar")]
     if deja:
+        # après un redémarrage de session le fichier peut avoir perdu son droit d'exécution
+        os.chmod(deja[0], os.stat(deja[0]).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         return deja[0]
     os.makedirs(dossier, exist_ok=True)
     for url in URLS_STOCKFISH:
