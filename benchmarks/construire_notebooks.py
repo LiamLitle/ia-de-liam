@@ -805,6 +805,8 @@ SORTIE = "/kaggle/working" if os.path.isdir("/kaggle/working") else "."
 print("device :", DEVICE, "| mteb", mteb.__version__)
 
 # ---- réglages ----
+NOM_MIND = "MIND v2"   # pour tester une autre version : "MIND v3a" + MIND_DOSSIER ci-dessous
+MIND_DOSSIER = None    # ex : "/kaggle/input/mind-v3a/mind-v3a" (dossier sentence-transformers)
 LEGER = False          # True : quelques tâches MTEB seulement (~30 min)
 BASELINES = [
     "Geotrend/distilbert-base-en-fr-cased",
@@ -844,7 +846,9 @@ LFS = "https://media.githubusercontent.com/media/LiamLitle/ia-de-liam/main/MIND/
 
 trouve = [os.path.dirname(p) for p in glob.glob("/kaggle/input/**/modules.json", recursive=True)
           if os.path.exists(os.path.join(os.path.dirname(p), "2_Dense"))]
-if trouve:
+if MIND_DOSSIER:
+    MIND = MIND_DOSSIER
+elif trouve:
     MIND = trouve[0]
 else:
     MIND = f"{SORTIE}/mind-v2-final"
@@ -855,7 +859,7 @@ else:
             urllib.request.urlretrieve(LFS + f, dest)
 print("MIND :", MIND)
 mind = SentenceTransformer(MIND, device=DEVICE)
-mind.model_card_data.model_name = "LiamLitle/mind-v2"  # nom utilisé par MTEB pour son cache de résultats
+mind.model_card_data.model_name = "LiamLitle/" + NOM_MIND.lower().replace(" ", "-")  # clé du cache MTEB : un nom par version !
 print(mind)
 e = mind.encode(["Le chat dort sur le canapé.", "Un chat fait la sieste sur le sofa.", "La bourse a chuté hier."])
 print(np.round(e @ e.T, 3))
@@ -892,8 +896,8 @@ def vitesse(modele, phrases, prefixe=""):
 
 phrases_vitesse = (fr.sentence1.tolist() + fr.sentence2.tolist())[:2000]
 lignes = []
-for nom in ["MIND v2"] + BASELINES:
-    m = mind if nom == "MIND v2" else SentenceTransformer(nom, device=DEVICE)
+for nom in [NOM_MIND] + BASELINES:
+    m = mind if nom == NOM_MIND else SentenceTransformer(nom, device=DEVICE)
     p = PREFIXES.get(nom, "")
     lignes.append({
         "modèle": nom,
@@ -923,7 +927,7 @@ corpus = [
 ]
 requetes = ["À quelle heure est le TGV ?", "Quel temps fait-il à Rennes ?", "Comment faire un gâteau ?",
             "Résultat du foot", "Mon PC est en panne", "L'inflation et la politique monétaire", "Combien dort un chat ?"]
-for nom, m in [("MIND v2", mind)]:
+for nom, m in [(NOM_MIND, mind)]:
     c, q = encoder(m, corpus), encoder(m, requetes)
     for r, s in zip(requetes, q @ c.T):
         print(f"{r:45s} -> {corpus[int(s.argmax())]}  ({s.max():.2f})")
@@ -945,7 +949,7 @@ print(len(TACHES), "tâches :", [t.metadata.name for t in TACHES])
 '''),
     ("code", r'''
 def charger(nom):
-    if nom == "MIND v2":
+    if nom == NOM_MIND:
         m = mind
     elif nom in OFFICIELS:
         return mteb.get_model(nom)  # gère les préfixes (e5 : "query: " / "passage: ")
@@ -987,9 +991,9 @@ for nom in OFFICIELS:
         scores.setdefault(nom, {}).update(evaluer(nom, manque))
 
 # 2) MIND et les modèles sans score officiel
-for nom in ["MIND v2"] + A_CALCULER:
+for nom in [NOM_MIND] + A_CALCULER:
     scores[nom] = evaluer(nom, TACHES)
-scores = {n: scores[n] for n in ["MIND v2"] + A_CALCULER + OFFICIELS if n in scores}
+scores = {n: scores[n] for n in [NOM_MIND] + A_CALCULER + OFFICIELS if n in scores}
 '''),
     ("code", r'''
 res = pd.DataFrame(scores)
@@ -1010,7 +1014,7 @@ par_type.loc["MOYENNE (tâches)"] = hors[modeles].mean()
 par_type.to_csv(f"{SORTIE}/bench4_mteb_fr_par_type.csv")
 display(par_type.T.sort_values("MOYENNE (types)", ascending=False).round(1))
 
-ax = par_type.loc["MOYENNE (types)"].sort_values().plot.barh(figsize=(8, 4), color=["#c55" if m == "MIND v2" else "#58a" for m in par_type.loc["MOYENNE (types)"].sort_values().index])
+ax = par_type.loc["MOYENNE (types)"].sort_values().plot.barh(figsize=(8, 4), color=["#c55" if m == NOM_MIND else "#58a" for m in par_type.loc["MOYENNE (types)"].sort_values().index])
 ax.set_title("MTEB français — moyenne des types de tâches (hors tâches vues)"); ax.set_xlabel("score")
 plt.tight_layout(); plt.savefig(f"{SORTIE}/bench4_mteb_fr.png", dpi=120); plt.show()
 '''),
@@ -1025,8 +1029,177 @@ plt.tight_layout(); plt.savefig(f"{SORTIE}/bench4_mteb_fr.png", dpi=120); plt.sh
 ]
 
 
+# =====================================================================================
+# 05 — MIND v3a : fine-tuning de MIND v2 (négatifs difficiles + gros lots)
+# =====================================================================================
+
+NB5 = [
+    ("md", r"""
+# 🧠 MIND v3a — fine-tuning de MIND v2
+
+On **repart de MIND v2 tel quel** (mêmes 69 M de paramètres, même architecture, 256 dimensions) et on continue son
+entraînement avec deux améliorations, **sans rien changer d'autre** pour savoir exactement ce qu'elles apportent :
+
+1. **Négatifs difficiles** : pour chaque phrase, on donne une phrase qui lui **ressemble mais ne veut pas dire la même chose**
+   - XNLI : prémisse → implication ✅ / contradiction ❌ (« Le chat dort » vs « Le chat ne dort pas »)
+   - PAWS-X : paraphrase ✅ / mêmes mots dans un autre ordre avec un autre sens ❌
+2. **Gros lots** (512 au lieu de 64) grâce à `CachedMultipleNegativesRankingLoss` : plus de comparaisons par pas, même mémoire GPU
+
+Uniquement les parties **train** des datasets (déjà vues par MIND v2), le **dev** STSb-fr sert à garder le meilleur point de contrôle,
+le **test** n'est regardé qu'à la fin.
+
+⚙️ Kaggle : **GPU T4**, **Internet ON**. Durée : ~30–60 min. Résultat : le dossier `mind-v3a/` (+ `mind-v3a.zip`) dans l'Output.
+Ensuite : notebook 04 avec `NOM_MIND = "MIND v3a"` pour le comparer à v2 sur MTEB.
+"""),
+    ("code", r"""
+!pip install -q -U "sentence-transformers[train]" datasets accelerate
+"""),
+    ("code", r"""
+import os, glob, shutil, random, urllib.request
+import numpy as np, pandas as pd, torch
+from datasets import load_dataset, Dataset, DatasetDict
+from sentence_transformers import SentenceTransformer, SentenceTransformerTrainer, SentenceTransformerTrainingArguments, losses
+from sentence_transformers.evaluation import EmbeddingSimilarityEvaluator
+try:
+    from sentence_transformers.sentence_transformer.training_args import BatchSamplers, MultiDatasetBatchSamplers
+except ImportError:
+    from sentence_transformers.training_args import BatchSamplers, MultiDatasetBatchSamplers
+
+try:
+    from kaggle_secrets import UserSecretsClient
+    os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN")
+except Exception:
+    pass
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+SORTIE = "/kaggle/working" if os.path.isdir("/kaggle/working") else "."
+print("device :", DEVICE)
+
+# ---- réglages ----
+NOM_SORTIE = "mind-v3a"
+N_TRIPLETS_XNLI = 150_000   # nombre max de triplets XNLI
+TAILLE_LOT = 512            # lot « virtuel » (CachedMNRL le découpe en mini-lots)
+MINI_LOT = 64               # ce qui passe réellement dans le GPU d'un coup
+EPOQUES = 1
+LR = 1e-5                   # plus bas que pour v2 (2e-5) : on affine un modèle déjà entraîné
+SEED = 42
+random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
+"""),
+    ("md", r"""
+## MIND v2 (point de départ)
+"""),
+    ("code", r"""
+FICHIERS_MIND = ["README.md", "config.json", "config_sentence_transformers.json", "modules.json",
+                 "sentence_bert_config.json", "tokenizer.json", "tokenizer_config.json", "model.safetensors",
+                 "1_Pooling/config.json", "2_Dense/config.json", "2_Dense/model.safetensors", "3_Normalize/config.json"]
+LFS = "https://media.githubusercontent.com/media/LiamLitle/ia-de-liam/main/MIND/mind-v2-final/"
+trouve = [os.path.dirname(p) for p in glob.glob("/kaggle/input/**/mind-v2-final/modules.json", recursive=True)]
+if trouve:
+    MIND_V2 = trouve[0]
+else:
+    MIND_V2 = f"{SORTIE}/mind-v2-final"
+    for f in FICHIERS_MIND:
+        dest = os.path.join(MIND_V2, f)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        if not os.path.exists(dest):
+            urllib.request.urlretrieve(LFS + f, dest)
+modele = SentenceTransformer(MIND_V2, device=DEVICE)
+print(modele)
+"""),
+    ("md", r"""
+## Données d'entraînement (parties train uniquement)
+"""),
+    ("code", r"""
+# XNLI fr : 0 = implication, 1 = neutre, 2 = contradiction
+xnli = load_dataset("facebook/xnli", "fr", split="train").to_pandas()
+ent = xnli[xnli.label == 0].drop_duplicates("premise")[["premise", "hypothesis"]].rename(columns={"hypothesis": "positive"})
+con = xnli[xnli.label == 2].drop_duplicates("premise")[["premise", "hypothesis"]].rename(columns={"hypothesis": "negative"})
+triplets_xnli = ent.merge(con, on="premise").rename(columns={"premise": "anchor"})
+triplets_xnli = triplets_xnli[triplets_xnli.anchor.str.len() > 15]
+triplets_xnli = triplets_xnli.sample(min(N_TRIPLETS_XNLI, len(triplets_xnli)), random_state=SEED)[["anchor", "positive", "negative"]]
+
+# PAWS-X fr : 1 = paraphrase, 0 = mêmes mots mais autre sens (négatif très difficile)
+paws = load_dataset("google-research-datasets/paws-x", "fr", split="train").to_pandas()
+paws = paws[(paws.sentence1.str.len() > 15) & (paws.sentence2.str.len() > 15)]
+pos = paws[paws.label == 1].drop_duplicates("sentence1").rename(columns={"sentence1": "anchor", "sentence2": "positive"})
+neg = paws[paws.label == 0].drop_duplicates("sentence1").rename(columns={"sentence1": "anchor", "sentence2": "negative"})
+triplets_paws = pos[["anchor", "positive"]].merge(neg[["anchor", "negative"]], on="anchor")
+paires_paws = pos[~pos.anchor.isin(triplets_paws.anchor)][["anchor", "positive"]]
+
+train = DatasetDict({
+    "xnli_triplets": Dataset.from_pandas(triplets_xnli, preserve_index=False),
+    "paws_triplets": Dataset.from_pandas(triplets_paws, preserve_index=False),
+    "paws_paires": Dataset.from_pandas(paires_paws, preserve_index=False),
+})
+print(train)
+print(triplets_xnli.iloc[0].to_dict())
+"""),
+    ("code", r"""
+from huggingface_hub import hf_hub_download
+def stsb(split):
+    d = pd.read_parquet(hf_hub_download("PhilipMay/stsb_multi_mt", f"fr/{split}-00000-of-00001.parquet", repo_type="dataset"))
+    return EmbeddingSimilarityEvaluator(d.sentence1.tolist(), d.sentence2.tolist(), (d.similarity_score / 5).tolist(),
+                                        name=f"stsb-fr-{split}")
+eval_dev, eval_test = stsb("dev"), stsb("test")
+avant = {"dev": eval_dev(modele), "test": eval_test(modele)}
+print("MIND v2 — STSb-fr dev :", round(100 * avant["dev"]["stsb-fr-dev_spearman_cosine"], 2),
+      "| test :", round(100 * avant["test"]["stsb-fr-test_spearman_cosine"], 2))
+"""),
+    ("md", r"""
+## Entraînement
+"""),
+    ("code", r"""
+perte = losses.CachedMultipleNegativesRankingLoss(modele, mini_batch_size=MINI_LOT)
+args = SentenceTransformerTrainingArguments(
+    output_dir=f"{SORTIE}/checkpoints",
+    num_train_epochs=EPOQUES,
+    per_device_train_batch_size=TAILLE_LOT,
+    learning_rate=LR,
+    warmup_ratio=0.1,
+    fp16=DEVICE == "cuda",
+    batch_sampler=BatchSamplers.NO_DUPLICATES,          # pas deux fois la même phrase dans un lot
+    multi_dataset_batch_sampler=MultiDatasetBatchSamplers.PROPORTIONAL,
+    eval_strategy="steps", eval_steps=50,
+    save_strategy="steps", save_steps=50, save_total_limit=2,
+    load_best_model_at_end=True, metric_for_best_model="eval_stsb-fr-dev_spearman_cosine",
+    logging_steps=10, report_to="none", seed=SEED,
+)
+entraineur = SentenceTransformerTrainer(model=modele, args=args, train_dataset=train, loss=perte, evaluator=eval_dev)
+entraineur.train()
+"""),
+    ("md", r"""
+## Résultat et sauvegarde
+"""),
+    ("code", r"""
+apres = {"dev": eval_dev(modele), "test": eval_test(modele)}
+tab = pd.DataFrame({
+    "MIND v2": [100 * avant["dev"]["stsb-fr-dev_spearman_cosine"], 100 * avant["test"]["stsb-fr-test_spearman_cosine"]],
+    NOM_SORTIE: [100 * apres["dev"]["stsb-fr-dev_spearman_cosine"], 100 * apres["test"]["stsb-fr-test_spearman_cosine"]],
+}, index=["STSb-fr dev", "STSb-fr test"]).round(2)
+tab["écart"] = (tab[NOM_SORTIE] - tab["MIND v2"]).round(2)
+print(tab)
+
+DOSSIER = f"{SORTIE}/{NOM_SORTIE}"
+modele.save(DOSSIER)
+shutil.make_archive(DOSSIER, "zip", DOSSIER)
+shutil.rmtree(f"{SORTIE}/checkpoints", ignore_errors=True)   # les points de contrôle prennent beaucoup de place
+print("modèle sauvegardé :", DOSSIER, "et", DOSSIER + ".zip")
+e = modele.encode(["Le chat dort sur le canapé.", "Un chat fait la sieste sur le sofa.", "Le chat ne dort pas sur le canapé."])
+print(np.round(e @ e.T, 3))
+"""),
+    ("md", r"""
+### Et après ?
+- Le STSb-fr **test** ne doit être regardé qu'une fois : c'est le verdict. Un gain sur le **dev** seul ne suffit pas.
+- Pour le vrai verdict (25 tâches) : dans le notebook 04, **Add Input → l'Output de ce notebook**, puis
+  `NOM_MIND = "MIND v3a"` et `MIND_DOSSIER = "/kaggle/input/<nom>/mind-v3a"` (adapter le chemin), `LEGER = False`.
+- Regarde surtout **PairClassification / STS / Reranking** : c'est là que les négatifs difficiles doivent aider.
+"""),
+]
+
+
 if __name__ == "__main__":
     ecrire("01_echecs_precision_evaluation.ipynb", NB1)
     ecrire("02_echecs_puzzles_lichess.ipynb", NB2)
     ecrire("03_echecs_tournoi_elo.ipynb", NB3)
     ecrire("04_mind_embeddings_mteb_fr.ipynb", NB4)
+    ecrire("05_mind_v3a_finetuning.ipynb", NB5)
