@@ -1466,6 +1466,9 @@ Repères : PWN@ab2 a fait **1904** en parties (notebook 03), PWN@ab3 **2345** au
 ⚙️ Kaggle : **Internet ON**. L'alpha-bêta tourne sur **CPU**, le GPU n'est pas nécessaire.
 Durée : ~4–6 h (ab3 réfléchit ~5–15 s par coup) → lance-le en **Save & Run All (Commit)**.
 Arrêt propre après `BUDGET_H` heures : les parties jouées sont gardées et analysées.
+
+**Reprise** : chaque partie finie est écrite dans `pwn3_parties.jsonl`. Relancer le notebook ne rejoue pas les parties déjà faites.
+Si la session a été coupée : télécharge `pwn3_parties.jsonl`, crée un dataset Kaggle avec, ajoute-le en **Input**, puis **Run All** : ça reprend là où ça s'était arrêté.
 '''),
     ("code", INSTALL_ECHECS),
     ("code", MODULE_ECHECS),
@@ -1563,9 +1566,28 @@ def bilan_niveau(adv, lignes):
         print(f"   {EMOJI[x]} {r['ouverture']:20s} PWN avec les {c:6s} → {x:8s} ({r['fin']}, {r['plies'] // 2} coups)")
     print()
 
+# reprise : si l'output est vide mais qu'un ancien pwn3_parties.jsonl a été ajouté en input
+# (dataset ou output d'une version précédente), on repart de là
+import glob, shutil
+if not os.path.exists(PARTIES):
+    anciens = sorted(glob.glob("/kaggle/input/**/pwn3_parties.jsonl", recursive=True))
+    if anciens:
+        with open(PARTIES, "w") as f:
+            for a in anciens:
+                f.write(open(a).read().rstrip("\n") + "\n")
+        print("reprise depuis :", *anciens)
 deja = []
 if os.path.exists(PARTIES):
-    deja = [json.loads(l) for l in open(PARTIES)]
+    vus = set()
+    for l in open(PARTIES):
+        if l.strip():
+            r = json.loads(l)
+            if (r["blancs"], r["noirs"], r["ouverture"]) not in vus:
+                vus.add((r["blancs"], r["noirs"], r["ouverture"]))
+                deja.append(r)
+    for r in deja:   # recrée les fichiers PGN / positions des parties déjà jouées
+        if "positions" in r:
+            enregistrer(r)
 fait = {(r["blancs"], r["noirs"], r["ouverture"]) for r in deja}
 par_niveau = {sf: [r for r in deja if infos(r)[0] == sf] for sf in STOCKFISH}
 reste = [t for t in taches if (t[0], t[1], t[4]) not in fait]
