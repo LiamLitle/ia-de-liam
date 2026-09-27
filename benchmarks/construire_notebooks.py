@@ -1453,7 +1453,10 @@ du plus faible au plus fort. Chaque niveau joue les mêmes **ouvertures**, une f
 On obtient :
 - le **score contre chaque niveau** (la courbe doit descendre de ~100 % à ~0 %) ;
 - l'**Elo en partie** de PWN@ab3 (maximum de vraisemblance, ancré sur les `UCI_Elo` de Stockfish) avec un intervalle à 95 % ;
-- toutes les parties en **PGN**.
+- toutes les parties en **PGN** + **toutes les positions** (FEN après chaque coup) en CSV.
+
+Pendant que ça tourne : une ligne par partie terminée (qui a gagné), et un **bilan dès qu'un niveau est fini**.
+Les fichiers de chaque partie sont écrits au fur et à mesure dans `pwn3_parties/stockfish_eloXXXX/`.
 
 Repères : PWN@ab2 a fait **1904** en parties (notebook 03), PWN@ab3 **2345** aux puzzles (notebook 02).
 
@@ -1522,26 +1525,73 @@ print(len(STOCKFISH), "niveaux,", len(taches), "parties")
     ("code", r'''
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from tqdm.auto import tqdm
 
 PARTIES = f"{SORTIE}/pwn3_parties.jsonl"
-fait = set()
+DOSSIER = f"{SORTIE}/pwn3_parties"          # un sous-dossier par niveau, un fichier par partie
+PAR_NIVEAU = 2 * len(OUV)
+EMOJI = {"victoire": "✅", "nulle": "🤝", "défaite": "❌"}
+
+def infos(r):
+    pwn_blancs = r["blancs"] == JOUEUR
+    adv = r["noirs"] if pwn_blancs else r["blancs"]
+    couleur = "blancs" if pwn_blancs else "noirs"
+    if r["resultat"] == "1/2-1/2":
+        res = "nulle"
+    else:
+        res = "victoire" if (r["resultat"] == "1-0") == pwn_blancs else "défaite"
+    return adv, couleur, res
+
+def enregistrer(r):
+    # fichiers lisibles pour chaque partie : PGN (à ouvrir sur lichess.org/paste) + CSV de toutes les positions
+    adv, couleur, res = infos(r)
+    d = os.path.join(DOSSIER, adv.replace("SF@", "stockfish_"))
+    os.makedirs(d, exist_ok=True)
+    nom = f"{r['ouverture']}_PWN-{couleur}".replace(" ", "-")
+    with open(os.path.join(d, nom + ".pgn"), "w") as f:
+        f.write(r["pgn"])
+    pos = pd.DataFrame(r["positions"])
+    pos.insert(0, "ouverture", r["ouverture"]); pos.insert(1, "PWN_joue", couleur); pos["resultat_PWN"] = res
+    pos.to_csv(os.path.join(d, nom + "_positions.csv"), index=False)
+
+def bilan_niveau(adv, lignes):
+    res = [infos(r)[2] for r in lignes]
+    v, n, p = res.count("victoire"), res.count("nulle"), res.count("défaite")
+    print(f"\n🏁 NIVEAU {adv} TERMINÉ : {v} victoires, {n} nulles, {p} défaites → score {100 * (v + n / 2) / len(res):.0f} %")
+    for r in sorted(lignes, key=lambda r: (r["ouverture"], infos(r)[1])):
+        a, c, x = infos(r)
+        print(f"   {EMOJI[x]} {r['ouverture']:20s} PWN avec les {c:6s} → {x:8s} ({r['fin']}, {r['plies'] // 2} coups)")
+    print()
+
+deja = []
 if os.path.exists(PARTIES):
-    for l in open(PARTIES):
-        r = json.loads(l); fait.add((r["blancs"], r["noirs"], r["ouverture"]))
+    deja = [json.loads(l) for l in open(PARTIES)]
+fait = {(r["blancs"], r["noirs"], r["ouverture"]) for r in deja}
+par_niveau = {sf: [r for r in deja if infos(r)[0] == sf] for sf in STOCKFISH}
 reste = [t for t in taches if (t[0], t[1], t[4]) not in fait]
 print(len(fait), "déjà jouées,", len(reste), "à jouer")
+for sf, lignes in par_niveau.items():
+    if len(lignes) >= PAR_NIVEAU:
+        bilan_niveau(sf, lignes)
 
 t0 = time.time()
 ex = ProcessPoolExecutor(NB_WORKERS, mp_context=mp.get_context("spawn"),
                          initializer=ce.init_worker, initargs=(False, 1, SF, SF_TEMPS))
 futurs = [ex.submit(ce.tache_partie, t) for t in reste]
 with open(PARTIES, "a") as f:
-    for fu in tqdm(as_completed(futurs), total=len(futurs)):
+    for k, fu in enumerate(as_completed(futurs), 1):
         try:
-            f.write(json.dumps(fu.result()) + "\n"); f.flush()
+            r = fu.result()
         except Exception as e:
             print("erreur :", e)
+            continue
+        f.write(json.dumps(r) + "\n"); f.flush()
+        enregistrer(r)
+        adv, couleur, res = infos(r)
+        par_niveau[adv].append(r)
+        print(f"[{k}/{len(reste)} | {(time.time() - t0) / 60:.0f} min] {EMOJI[res]} contre {adv} ({len(par_niveau[adv])}/{PAR_NIVEAU}) :"
+              f" {r['ouverture']}, PWN avec les {couleur} → {res} ({r['fin']}, {r['plies'] // 2} coups)")
+        if len(par_niveau[adv]) == PAR_NIVEAU:
+            bilan_niveau(adv, par_niveau[adv])
         if time.time() - t0 > BUDGET_H * 3600:
             print("budget temps atteint, on s'arrête là")
             for x in futurs:
@@ -1565,6 +1615,16 @@ parties["resultat_pwn"] = [
 parties["score"] = parties.resultat_pwn.map({"victoire": 1.0, "nulle": 0.5, "défaite": 0.0})
 with open(f"{SORTIE}/pwn3_parties.pgn", "w") as f:
     f.write("\n\n".join(parties.pgn))
+toutes = []
+for _, r in parties.iterrows():
+    pos = pd.DataFrame(r.positions)
+    pos.insert(0, "adversaire", r.adversaire); pos.insert(1, "ouverture", r.ouverture)
+    pos.insert(2, "PWN_joue", r.couleur); pos["resultat_PWN"] = r.resultat_pwn
+    toutes.append(pos)
+pd.concat(toutes).to_csv(f"{SORTIE}/pwn3_positions.csv", index=False)
+liste = parties[["adversaire", "ouverture", "couleur", "resultat_pwn", "fin", "plies"]].copy()
+liste["coups"] = liste.pop("plies") // 2
+liste.sort_values(["adversaire", "ouverture", "couleur"]).to_csv(f"{SORTIE}/pwn3_liste_parties.csv", index=False)
 
 tab = parties.groupby("adversaire").agg(
     victoires=("resultat_pwn", lambda s: (s == "victoire").sum()),
@@ -1617,6 +1677,15 @@ ax.set_ylim(0, 110); ax.set_title(f"{JOUEUR} contre Stockfish 17"); ax.legend(lo
 plt.tight_layout(); plt.savefig(f"{SORTIE}/pwn3_vs_stockfish.png", dpi=120); plt.show()
 '''),
     ("md", r'''
+### Les fichiers (onglet Output)
+| Fichier | Contenu |
+|---|---|
+| `pwn3_parties/stockfish_eloXXXX/<ouverture>_PWN-<couleur>.pgn` | chaque partie, à coller sur **lichess.org/paste** pour la rejouer |
+| `pwn3_parties/stockfish_eloXXXX/<ouverture>_PWN-<couleur>_positions.csv` | chaque coup de la partie : qui joue, le coup, la **position (FEN)** obtenue, le temps de réflexion |
+| `pwn3_positions.csv` | toutes les positions de toutes les parties dans un seul fichier |
+| `pwn3_liste_parties.csv` | la liste des parties : adversaire, ouverture, couleur de PWN, résultat, comment ça finit, nombre de coups |
+| `pwn3_par_niveau.csv`, `pwn3_elo.csv`, `pwn3_vs_stockfish.png`, `pwn3_parties.pgn` | les bilans, l'Elo, la courbe, toutes les parties en un PGN |
+
 ### Comment lire les résultats
 - Le niveau où le score passe sous **50 %**, c'est à peu près l'Elo de PWN@ab3.
 - Si PWN fait encore > 50 % contre le niveau le plus fort, ajoute des niveaux plus hauts dans `NIVEAUX` (ex. 2700, 2900) et relance :

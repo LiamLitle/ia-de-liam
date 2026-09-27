@@ -444,17 +444,24 @@ def jouer_partie(blancs, noirs, ouverture, max_plies=300):
     """ouverture = liste de coups UCI joués d'office ; renvoie un dict (résultat, pgn, temps)"""
     import chess.pgn
     b = chess.Board()
+    positions = []  # chaque coup : qui, coup, position obtenue, temps de réflexion
     for u in ouverture:
-        b.push_uci(u)
+        mv = chess.Move.from_uci(u)
+        positions.append({"ply": b.ply() + 1, "joueur": "ouverture", "san": b.san(mv), "uci": u, "secondes": 0.0})
+        b.push(mv)
+        positions[-1]["fen"] = b.fen()
     temps = {blancs: 0.0, noirs: 0.0}
     nb = {blancs: 0, noirs: 0}
     while not b.is_game_over(claim_draw=True) and b.ply() < max_plies:
         j = blancs if b.turn == chess.WHITE else noirs
         t0 = time.perf_counter()
         mv = coup(j, b)
-        temps[j] += time.perf_counter() - t0
+        dt = time.perf_counter() - t0
+        temps[j] += dt
         nb[j] += 1
+        positions.append({"ply": b.ply() + 1, "joueur": j, "san": b.san(mv), "uci": mv.uci(), "secondes": round(dt, 3)})
         b.push(mv)
+        positions[-1]["fen"] = b.fen()
     res = b.result(claim_draw=True) if b.is_game_over(claim_draw=True) else "1/2-1/2"
     fin = b.outcome(claim_draw=True)
     jeu = chess.pgn.Game.from_board(b)
@@ -465,6 +472,7 @@ def jouer_partie(blancs, noirs, ouverture, max_plies=300):
         "plies": b.ply(), "pgn": str(jeu),
         "s_par_coup_blancs": temps[blancs] / max(1, nb[blancs]),
         "s_par_coup_noirs": temps[noirs] / max(1, nb[noirs]),
+        "positions": positions,
     }
 
 
