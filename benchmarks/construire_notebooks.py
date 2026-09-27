@@ -816,14 +816,19 @@ BASELINES = [
 ]
 PREFIXES = {"intfloat/multilingual-e5-small": "query: ", "intfloat/multilingual-e5-base": "query: "}
 
-# Partie B (MTEB) — pour gagner du temps, on ne recalcule pas ce qui existe déjà :
-# scores OFFICIELS du leaderboard MTEB (téléchargés en ~2 min, les tâches manquantes sont calculées)
-OFFICIELS = ["intfloat/multilingual-e5-small", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"]
-# pas de score officiel en français : calculés ici (MIND est toujours calculé)
+# Partie B (MTEB) — seul MIND est calculé. Les modèles de comparaison sont repris du
+# leaderboard officiel MTEB (scores déjà publiés sur les 25 tâches françaises, téléchargés en ~2 min)
+OFFICIELS = [
+    "sentence-transformers/all-MiniLM-L6-v2",                        #  23 M, anglais seulement (plancher)
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",   # 118 M
+    "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",   # 278 M
+    "intfloat/multilingual-e5-base",                                 # 278 M
+    "sentence-transformers/LaBSE",                                   # 471 M
+]
+# modèles sans score officiel à calculer aussi (~1 h chacun), par ex. le point de départ de MIND :
 A_CALCULER = [
-    "Geotrend/distilbert-base-en-fr-cased",           # le point de départ de MIND
-    "dangvantuan/sentence-camembert-base",            # le spécialiste du français
-    # "sentence-transformers/distiluse-base-multilingual-cased-v2",   # +1 h environ
+    # "Geotrend/distilbert-base-en-fr-cased",
+    # "dangvantuan/sentence-camembert-base",
 ]
 FP16 = True            # demi-précision sur GPU : ~2x plus rapide, écart de score négligeable
 '''),
