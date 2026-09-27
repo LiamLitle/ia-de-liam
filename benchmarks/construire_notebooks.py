@@ -1685,9 +1685,11 @@ def ecran():
     en_cours = []
     for fich in sorted(glob.glob(f"{SUIVI}/*.json")):
         try:
-            en_cours.append(json.load(open(fich)))
+            e = json.load(open(fich))
         except Exception:
-            pass
+            continue
+        if "ouverture" in e:   # sinon : partie lancée par une ancienne version du notebook
+            en_cours.append(e)
     h = [STYLE, "<div class='pw'>",
          f"<h2>♟️ {JOUEUR} contre Stockfish 17</h2>",
          f"<div>{fait_n}/{total} parties terminées · {len(en_cours)} en cours · {(time.time() - t0) / 60:.0f} min</div>",
@@ -1709,7 +1711,11 @@ def ecran():
                  f"<small>✅ {v} · 🤝 {n} · ❌ {d} · {len(res)}/{PAR_NIVEAU}"
                  f"{f' · {cours} en cours' if cours else ''}</small><br>Score PWN : <b>{sc}</b></div>")
     h.append("</div><div class='cartes'>")
-    h += [carte(e) for e in en_cours]
+    for e in en_cours:
+        try:
+            h.append(carte(e))
+        except Exception:
+            pass   # fichier d'une ancienne partie (ex. kernel pas redémarré) : on l'ignore
     h.append("</div><h3>Dernières parties terminées</h3>")
     h.append("".join(derniers[-10:][::-1]) or "<i>aucune pour l'instant (une partie dure 10–20 min)</i>")
     h.append("</div>")
