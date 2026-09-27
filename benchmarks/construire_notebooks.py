@@ -815,6 +815,17 @@ BASELINES = [
     # "intfloat/multilingual-e5-base", "BAAI/bge-m3",   # plus gros, si tu veux viser haut
 ]
 PREFIXES = {"intfloat/multilingual-e5-small": "query: ", "intfloat/multilingual-e5-base": "query: "}
+
+# Partie B (MTEB) — pour gagner du temps, on ne recalcule pas ce qui existe déjà :
+# scores OFFICIELS du leaderboard MTEB (téléchargés en ~2 min, les tâches manquantes sont calculées)
+OFFICIELS = ["intfloat/multilingual-e5-small", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"]
+# pas de score officiel en français : calculés ici (MIND est toujours calculé)
+A_CALCULER = [
+    "Geotrend/distilbert-base-en-fr-cased",           # le point de départ de MIND
+    "dangvantuan/sentence-camembert-base",            # le spécialiste du français
+    # "sentence-transformers/distiluse-base-multilingual-cased-v2",   # +1 h environ
+]
+FP16 = True            # demi-précision sur GPU : ~2x plus rapide, écart de score négligeable
 '''),
     ("md", r'''
 ## Téléchargement de MIND
@@ -930,25 +941,50 @@ print(len(TACHES), "tâches :", [t.metadata.name for t in TACHES])
     ("code", r'''
 def charger(nom):
     if nom == "MIND v2":
-        return mind
-    try:
+        m = mind
+    elif nom in OFFICIELS:
         return mteb.get_model(nom)  # gère les préfixes (e5 : "query: " / "passage: ")
-    except Exception as e:
-        print("mteb.get_model a échoué, SentenceTransformer direct :", e)
-        return SentenceTransformer(nom, device=DEVICE)
+    else:
+        m = SentenceTransformer(nom, device=DEVICE)
+        m.model_card_data.model_name = m.model_card_data.model_name or nom
+    if FP16 and DEVICE == "cuda":
+        m.half()
+    return m
 
-scores = {}
-for nom in ["MIND v2"] + BASELINES:
+def evaluer(nom, taches):
     t0 = time.time()
     m = charger(nom)
-    r = mteb.evaluate(m, TACHES, cache=CACHE, raise_error=False, encode_kwargs={"batch_size": 64})
-    s = {}
-    for tr in r.task_results:  # les tâches sont déjà restreintes aux sous-ensembles français
-        s[tr.task_name] = 100 * tr.get_score()
-    scores[nom] = s
+    r = mteb.evaluate(m, taches, cache=CACHE, raise_error=False, encode_kwargs={"batch_size": 128})
+    s = {tr.task_name: 100 * tr.get_score() for tr in r.task_results}  # tâches déjà restreintes au français
     print(f"{nom} : {len(s)} tâches en {(time.time() - t0) / 60:.1f} min", "| erreurs :", list(r.exceptions or [])[:3])
     if m is not mind:
         del m; gc.collect(); torch.cuda.empty_cache() if DEVICE == "cuda" else None
+    return s
+
+scores = {}
+# 1) scores officiels (une révision du modèle peut ne pas avoir toutes les tâches : on fusionne)
+try:
+    officiels = mteb.load_results(models=OFFICIELS, tasks=TACHES)
+    for mr in officiels.model_results:
+        for tr in mr.task_results:
+            try:
+                v = 100 * tr.get_score()
+            except Exception:
+                continue
+            if v == v:  # pas NaN
+                scores.setdefault(mr.model_name, {}).setdefault(tr.task_name, v)
+except Exception as e:
+    print("scores officiels indisponibles, on calcule tout :", e)
+for nom in OFFICIELS:
+    manque = [t for t in TACHES if t.metadata.name not in scores.get(nom, {})]
+    print(f"{nom} : {len(TACHES) - len(manque)} scores officiels, {len(manque)} à calculer")
+    if manque:
+        scores.setdefault(nom, {}).update(evaluer(nom, manque))
+
+# 2) MIND et les modèles sans score officiel
+for nom in ["MIND v2"] + A_CALCULER:
+    scores[nom] = evaluer(nom, TACHES)
+scores = {n: scores[n] for n in ["MIND v2"] + A_CALCULER + OFFICIELS if n in scores}
 '''),
     ("code", r'''
 res = pd.DataFrame(scores)
