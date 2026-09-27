@@ -1076,6 +1076,8 @@ SORTIE = "/kaggle/working" if os.path.isdir("/kaggle/working") else "."
 print("device :", DEVICE)
 
 # ---- réglages ----
+NOM_DEPART = "MIND v2"
+DOSSIER_DEPART = None       # None = MIND v2 (GitHub) ; sinon un modèle déjà affiné, ex : "/kaggle/input/finemind/finemind"
 NOM_SORTIE = "finemind"   # FineMIND
 N_TRIPLETS_XNLI = 150_000   # nombre max de triplets XNLI
 TAILLE_LOT = 512            # lot « virtuel » (CachedMNRL le découpe en mini-lots)
@@ -1086,7 +1088,7 @@ SEED = 42
 random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
 """),
     ("md", r"""
-## MIND v2 (point de départ)
+## Point de départ (MIND v2 par défaut, ou un modèle déjà affiné)
 """),
     ("code", r"""
 FICHIERS_MIND = ["README.md", "config.json", "config_sentence_transformers.json", "modules.json",
@@ -1094,7 +1096,9 @@ FICHIERS_MIND = ["README.md", "config.json", "config_sentence_transformers.json"
                  "1_Pooling/config.json", "2_Dense/config.json", "2_Dense/model.safetensors", "3_Normalize/config.json"]
 LFS = "https://media.githubusercontent.com/media/LiamLitle/ia-de-liam/main/MIND/mind-v2-final/"
 trouve = [os.path.dirname(p) for p in glob.glob("/kaggle/input/**/mind-v2-final/modules.json", recursive=True)]
-if trouve:
+if DOSSIER_DEPART:
+    MIND_V2 = DOSSIER_DEPART
+elif trouve:
     MIND_V2 = trouve[0]
 else:
     MIND_V2 = f"{SORTIE}/mind-v2-final"
@@ -1142,7 +1146,7 @@ def stsb(split):
                                         name=f"stsb-fr-{split}")
 eval_dev, eval_test = stsb("dev"), stsb("test")
 avant = {"dev": eval_dev(modele), "test": eval_test(modele)}
-print("MIND v2 — STSb-fr dev :", round(100 * avant["dev"]["stsb-fr-dev_spearman_cosine"], 2),
+print(NOM_DEPART, "— STSb-fr dev :", round(100 * avant["dev"]["stsb-fr-dev_spearman_cosine"], 2),
       "| test :", round(100 * avant["test"]["stsb-fr-test_spearman_cosine"], 2))
 """),
     ("md", r"""
@@ -1173,10 +1177,10 @@ entraineur.train()
     ("code", r"""
 apres = {"dev": eval_dev(modele), "test": eval_test(modele)}
 tab = pd.DataFrame({
-    "MIND v2": [100 * avant["dev"]["stsb-fr-dev_spearman_cosine"], 100 * avant["test"]["stsb-fr-test_spearman_cosine"]],
+    NOM_DEPART: [100 * avant["dev"]["stsb-fr-dev_spearman_cosine"], 100 * avant["test"]["stsb-fr-test_spearman_cosine"]],
     NOM_SORTIE: [100 * apres["dev"]["stsb-fr-dev_spearman_cosine"], 100 * apres["test"]["stsb-fr-test_spearman_cosine"]],
 }, index=["STSb-fr dev", "STSb-fr test"]).round(2)
-tab["écart"] = (tab[NOM_SORTIE] - tab["MIND v2"]).round(2)
+tab["écart"] = (tab[NOM_SORTIE] - tab[NOM_DEPART]).round(2)
 print(tab)
 
 DOSSIER = f"{SORTIE}/{NOM_SORTIE}"
