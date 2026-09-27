@@ -1574,49 +1574,152 @@ for sf, lignes in par_niveau.items():
     if len(lignes) >= PAR_NIVEAU:
         bilan_niveau(sf, lignes)
 
-# ---- affichage en direct : échiquiers des parties en cours + scores par niveau ----
+# ---- affichage en direct : une carte par partie en cours + tableau des scores ----
+import glob, shutil
 import chess.svg
 from concurrent.futures import wait, FIRST_COMPLETED
 from IPython.display import display, HTML
 
 SUIVI = "/tmp/pwn3_en_cours"
-import glob, shutil
 shutil.rmtree(SUIVI, ignore_errors=True); os.makedirs(SUIVI)
-derniers = []   # dernières parties finies (texte)
+derniers = []     # parties finies (HTML), les plus récentes à la fin
+vu = {}           # partie -> dernier demi-coup affiché (pour n'animer que les nouveaux coups)
+VALEUR = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
+SYMB = {chess.WHITE: {chess.PAWN: "♙", chess.KNIGHT: "♘", chess.BISHOP: "♗", chess.ROOK: "♖", chess.QUEEN: "♕"},
+        chess.BLACK: {chess.PAWN: "♟", chess.KNIGHT: "♞", chess.BISHOP: "♝", chess.ROOK: "♜", chess.QUEEN: "♛"}}
+DEPART = {chess.PAWN: 8, chess.KNIGHT: 2, chess.BISHOP: 2, chess.ROOK: 2, chess.QUEEN: 1}
+COULEURS = {"square light": "#eeeed2", "square dark": "#769656",
+            "square light lastmove": "#f6f669", "square dark lastmove": "#baca2b", "margin": "#312e2b", "coord": "#ddd"}
+TAILLE = 45   # taille d'une case dans le repère SVG de chess.svg (marge 15)
+
+STYLE = """<style>
+.pw{font-family:system-ui,sans-serif;color:#222;max-width:1250px}
+.pw h2{margin:4px 0 2px}.pw .aide{background:#f4f6f8;border-radius:8px;padding:8px 12px;font-size:13px;margin:8px 0}
+.pw .niv{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+.pw .nv{border:1px solid #ddd;border-radius:10px;padding:8px 10px;width:190px;background:#fff;font-size:13px}
+.pw .nv.fini{border-color:#2e7d32;background:#eef7ee}
+.pw .barre{display:flex;height:10px;border-radius:5px;overflow:hidden;background:#eee;margin:5px 0}
+.pw .cartes{display:flex;flex-wrap:wrap;gap:12px}
+.pw .carte{border:1px solid #ccc;border-radius:12px;padding:8px;background:#fff;width:250px;box-shadow:0 1px 4px #0001}
+.pw .titre{font-size:13px;color:#555;margin-bottom:6px}
+.pw .joueur{display:flex;align-items:center;justify-content:space-between;padding:4px 6px;border-radius:6px;font-size:13px;white-space:nowrap}
+.pw .joueur.pwn{background:#e3f0ff}.pw .joueur.sf{background:#f3f3f3}
+.pw .pion{display:inline-block;width:13px;height:13px;border-radius:50%;border:1px solid #333;margin-right:6px;vertical-align:-2px}
+.pw .reflechit{color:#d35400;font-weight:bold;animation:clig 1s infinite}
+@keyframes clig{50%{opacity:.25}}
+.pw .pris{font-size:15px;letter-spacing:-2px;color:#555;min-height:18px}
+.pw .info{font-size:13px;margin-top:6px}
+.pw .mat{height:8px;border-radius:4px;background:#ddd;position:relative;margin-top:4px}
+.pw .fin{font-size:13px;padding:3px 0;border-bottom:1px solid #eee}
+</style>"""
+
+def case_xy(sq, retourne):
+    f, r = chess.square_file(sq), chess.square_rank(sq)
+    if retourne:
+        return 15 + TAILLE * (7 - f), 15 + TAILLE * r
+    return 15 + TAILLE * f, 15 + TAILLE * (7 - r)
+
+def echiquier(bd, coup, retourne, animer):
+    svg = chess.svg.board(bd, lastmove=coup, size=250, flipped=retourne, colors=COULEURS,
+                          check=bd.king(bd.turn) if bd.is_check() else None)
+    if coup and animer:   # la pièce glisse de sa case de départ à sa case d'arrivée
+        xa, ya = case_xy(coup.from_square, retourne)
+        xb, yb = case_xy(coup.to_square, retourne)
+        cible = f'transform="translate({xb}, {yb})" />'
+        anim = (f'transform="translate({xb}, {yb})"><animateTransform attributeName="transform" type="translate" '
+                f'from="{xa} {ya}" to="{xb} {yb}" dur="0.7s" fill="freeze" /></use>')
+        svg = svg.replace(cible, anim, 1)
+    return svg
+
+def pieces_prises(bd, couleur):
+    # pièces de `couleur` qui ont disparu de l'échiquier
+    return "".join(SYMB[couleur][p] * max(0, DEPART[p] - len(bd.pieces(p, couleur))) for p in DEPART)
+
+def materiel(bd, couleur):
+    return sum(v * len(bd.pieces(p, couleur)) for p, v in VALEUR.items())
+
+def barre_joueur(nom, classe, couleur_pieces, a_son_tour, prises_adverses):
+    pastille = "#fff" if couleur_pieces == chess.WHITE else "#222"
+    txt_couleur = "blancs" if couleur_pieces == chess.WHITE else "noirs"
+    etat = "<span class='reflechit'>⏳ joue…</span>" if a_son_tour else ""
+    return (f"<div class='joueur {classe}'><span><span class='pion' style='background:{pastille}'></span>"
+            f"<b>{nom}</b> <small>({txt_couleur})</small></span>{etat}</div>"
+            f"<div class='pris' title='pièces capturées'>{prises_adverses}</div>")
+
+def carte(e):
+    pwn_blancs = e["blancs"] == JOUEUR
+    adv = e["noirs"] if pwn_blancs else e["blancs"]
+    c_pwn = chess.WHITE if pwn_blancs else chess.BLACK
+    bd = chess.Board(e["fen"])
+    coup = chess.Move.from_uci(e["dernier"]) if e["dernier"] else None
+    cle = (e["blancs"], e["noirs"], e["ouverture"])
+    animer = vu.get(cle) != e["ply"]
+    vu[cle] = e["ply"]
+    ecart = materiel(bd, c_pwn) - materiel(bd, not c_pwn)
+    if ecart > 0:
+        mat_txt, mat_coul = f"PWN mène de <b>+{ecart}</b>", "#1e88e5"
+    elif ecart < 0:
+        mat_txt, mat_coul = f"Stockfish mène de <b>+{-ecart}</b>", "#e53935"
+    else:
+        mat_txt, mat_coul = "matériel <b>égal</b>", "#999"
+    pos = 50 + max(-50, min(50, ecart * 5))
+    num = (e["ply"] + 1) // 2
+    if coup:
+        qui = "PWN" if (e["ply"] % 2 == 1) == pwn_blancs else "Stockfish"
+        dernier = f"{num}{'.' if e['ply'] % 2 else '…'} <b>{e['san']}</b> ({qui})"
+    else:
+        dernier = "–"
+    duree = (time.time() - e["debut"]) / 60
+    haut = barre_joueur(f"Stockfish {adv[6:]}", "sf", not c_pwn, bd.turn != c_pwn, pieces_prises(bd, c_pwn))
+    bas = barre_joueur(JOUEUR, "pwn", c_pwn, bd.turn == c_pwn, pieces_prises(bd, not c_pwn))
+    return (f"<div class='carte'><div class='titre'>📖 {e['ouverture']} · coup {num} · {duree:.0f} min</div>"
+            f"{haut}{echiquier(bd, coup, not pwn_blancs, animer)}{bas}"
+            f"<div class='info'>Dernier coup : {dernier}</div>"
+            f"<div class='info'>⚖️ {mat_txt}</div>"
+            f"<div class='mat'><div style='position:absolute;left:{pos}%;top:-3px;width:4px;height:14px;background:{mat_coul}'></div>"
+            f"<div style='position:absolute;left:50%;top:0;width:1px;height:8px;background:#555'></div></div></div>")
 
 def ecran():
     fait_n = sum(len(v) for v in par_niveau.values())
     total = PAR_NIVEAU * len(STOCKFISH)
-    h = [f"<div style='font-family:sans-serif'>"
-         f"<h3>♟️ {JOUEUR} contre Stockfish — {fait_n}/{total} parties — {(time.time() - t0) / 60:.0f} min</h3>"
-         f"<div style='background:#ddd;width:600px;height:14px;border-radius:7px'>"
-         f"<div style='background:#58a;width:{600 * fait_n / total:.0f}px;height:14px;border-radius:7px'></div></div>"
-         "<table style='margin:10px 0;border-collapse:collapse'><tr><th>Stockfish</th><th>jouées</th>"
-         "<th>✅</th><th>🤝</th><th>❌</th><th>score PWN</th></tr>"]
+    en_cours = []
+    for fich in sorted(glob.glob(f"{SUIVI}/*.json")):
+        try:
+            en_cours.append(json.load(open(fich)))
+        except Exception:
+            pass
+    h = [STYLE, "<div class='pw'>",
+         f"<h2>♟️ {JOUEUR} contre Stockfish 17</h2>",
+         f"<div>{fait_n}/{total} parties terminées · {len(en_cours)} en cours · {(time.time() - t0) / 60:.0f} min</div>",
+         f"<div class='barre' style='width:600px'><div style='width:{100 * fait_n / total:.1f}%;background:#1e88e5'></div></div>",
+         "<div class='aide'>Chaque carte = une partie en cours. <b style='color:#1e88e5'>PWN</b> (ton IA) est toujours "
+         "<b>en bas</b>, <b>Stockfish</b> en haut. La pastille ⚪/⚫ indique la couleur des pièces. Les cases jaunes = dernier coup. "
+         "Sous chaque joueur : les pièces qu'il a capturées. Les niveaux sont joués dans un ordre mélangé exprès.</div>",
+         "<div class='niv'>"]
     for sf, lignes in par_niveau.items():
         res = [infos(r)[2] for r in lignes]
         v, n, d = res.count("victoire"), res.count("nulle"), res.count("défaite")
+        cours = sum(1 for e in en_cours if sf in (e["blancs"], e["noirs"]))
         sc = f"{100 * (v + n / 2) / len(res):.0f} %" if res else "–"
-        fond = "#e6f4ea" if len(res) == PAR_NIVEAU else "white"
-        h.append(f"<tr style='background:{fond}'><td style='padding:2px 12px'><b>{sf[3:]}</b></td>"
-                 f"<td style='padding:2px 12px'>{len(res)}/{PAR_NIVEAU}</td><td style='padding:2px 12px'>{v}</td>"
-                 f"<td style='padding:2px 12px'>{n}</td><td style='padding:2px 12px'>{d}</td>"
-                 f"<td style='padding:2px 12px'><b>{sc}</b></td></tr>")
-    h.append("</table><div style='display:flex;flex-wrap:wrap;gap:14px'>")
-    for fich in sorted(glob.glob(f"{SUIVI}/*.json")):
-        try:
-            e = json.load(open(fich))
-        except Exception:
-            continue
-        pwn_blancs = e["blancs"] == JOUEUR
-        adv = e["noirs"] if pwn_blancs else e["blancs"]
-        bd = chess.Board(e["fen"])
-        der = chess.Move.from_uci(e["dernier"]) if e["dernier"] else None
-        svg = chess.svg.board(bd, lastmove=der, size=240, flipped=not pwn_blancs, check=bd.king(bd.turn) if bd.is_check() else None)
-        h.append(f"<div style='text-align:center'>{svg}<br>PWN ({'blancs' if pwn_blancs else 'noirs'}) vs <b>{adv[3:]}</b>"
-                 f"<br>coup {(e['ply'] + 1) // 2}</div>")
-    h.append("</div><p><b>Dernières parties :</b><br>" + "<br>".join(derniers[-8:][::-1]) + "</p></div>")
+        fini = " fini" if len(res) == PAR_NIVEAU else ""
+        w = lambda x: 100 * x / PAR_NIVEAU
+        h.append(f"<div class='nv{fini}'><b>Stockfish {sf[6:]}</b>{' ✔️' if fini else ''}"
+                 f"<div class='barre'><div style='width:{w(v)}%;background:#43a047'></div>"
+                 f"<div style='width:{w(n)}%;background:#fbc02d'></div><div style='width:{w(d)}%;background:#e53935'></div></div>"
+                 f"<small>✅ {v} · 🤝 {n} · ❌ {d} · {len(res)}/{PAR_NIVEAU}"
+                 f"{f' · {cours} en cours' if cours else ''}</small><br>Score PWN : <b>{sc}</b></div>")
+    h.append("</div><div class='cartes'>")
+    h += [carte(e) for e in en_cours]
+    h.append("</div><h3>Dernières parties terminées</h3>")
+    h.append("".join(derniers[-10:][::-1]) or "<i>aucune pour l'instant (une partie dure 10–20 min)</i>")
+    h.append("</div>")
     return HTML("".join(h))
+
+def ligne_fin(r):
+    adv, couleur, res = infos(r)
+    coul = {"victoire": "#43a047", "nulle": "#f9a825", "défaite": "#e53935"}[res]
+    return (f"<div class='fin'>{EMOJI[res]} <b style='color:{coul}'>{res.upper()}</b> de PWN ({couleur}) contre "
+            f"<b>Stockfish {adv[6:]}</b> · {r['ouverture']} · {r['plies'] // 2} coups · {r['fin'].lower()}</div>")
 
 t0 = time.time()
 ecran_id = display(ecran(), display_id=True)
@@ -1626,7 +1729,7 @@ en_attente = {ex.submit(ce.tache_partie, t + (SUIVI,)) for t in reste}
 k = 0
 with open(PARTIES, "a") as f:
     while en_attente:
-        finis, en_attente = wait(en_attente, timeout=5, return_when=FIRST_COMPLETED)
+        finis, en_attente = wait(en_attente, timeout=2, return_when=FIRST_COMPLETED)
         for fu in finis:
             k += 1
             try:
@@ -1640,7 +1743,7 @@ with open(PARTIES, "a") as f:
             par_niveau[adv].append(r)
             ligne = (f"{EMOJI[res]} contre {adv} ({len(par_niveau[adv])}/{PAR_NIVEAU}) : {r['ouverture']}, "
                      f"PWN avec les {couleur} → {res} ({r['fin']}, {r['plies'] // 2} coups)")
-            derniers.append(ligne)
+            derniers.append(ligne_fin(r))
             print(f"[{k}/{len(reste)} | {(time.time() - t0) / 60:.0f} min] {ligne}")
             if len(par_niveau[adv]) == PAR_NIVEAU:
                 bilan_niveau(adv, par_niveau[adv])

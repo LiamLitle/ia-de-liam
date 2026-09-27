@@ -441,15 +441,22 @@ def resoudre_puzzle(joueur, fen, moves):
 
 # -- parties -------------------------------------------------------------------------
 
-def ecrire_suivi(suivi, blancs, noirs, b, dernier):
+def ecrire_suivi(suivi, blancs, noirs, b, ouverture, debut):
     # position en cours dans un petit fichier JSON, lu par le notebook pour l'afficher en direct
+    dernier = b.peek() if b.move_stack else None
+    san = ""
+    if dernier:
+        prec = b.copy()
+        prec.pop()
+        san = prec.san(dernier)
     tmp = suivi + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"blancs": blancs, "noirs": noirs, "fen": b.fen(), "dernier": dernier, "ply": b.ply()}, f)
+        json.dump({"blancs": blancs, "noirs": noirs, "fen": b.fen(), "dernier": dernier.uci() if dernier else "",
+                   "san": san, "ply": b.ply(), "ouverture": ouverture, "debut": debut}, f)
     os.replace(tmp, suivi)
 
 
-def jouer_partie(blancs, noirs, ouverture, max_plies=300, suivi=None):
+def jouer_partie(blancs, noirs, ouverture, max_plies=300, suivi=None, nom_ouverture=""):
     """ouverture = liste de coups UCI joués d'office ; renvoie un dict (résultat, pgn, temps)"""
     import chess.pgn
     b = chess.Board()
@@ -461,6 +468,9 @@ def jouer_partie(blancs, noirs, ouverture, max_plies=300, suivi=None):
         positions[-1]["fen"] = b.fen()
     temps = {blancs: 0.0, noirs: 0.0}
     nb = {blancs: 0, noirs: 0}
+    debut = time.time()
+    if suivi:
+        ecrire_suivi(suivi, blancs, noirs, b, nom_ouverture, debut)
     while not b.is_game_over(claim_draw=True) and b.ply() < max_plies:
         j = blancs if b.turn == chess.WHITE else noirs
         t0 = time.perf_counter()
@@ -472,7 +482,7 @@ def jouer_partie(blancs, noirs, ouverture, max_plies=300, suivi=None):
         b.push(mv)
         positions[-1]["fen"] = b.fen()
         if suivi:
-            ecrire_suivi(suivi, blancs, noirs, b, mv.uci())
+            ecrire_suivi(suivi, blancs, noirs, b, nom_ouverture, debut)
     res = b.result(claim_draw=True) if b.is_game_over(claim_draw=True) else "1/2-1/2"
     fin = b.outcome(claim_draw=True)
     jeu = chess.pgn.Game.from_board(b)
@@ -523,7 +533,7 @@ def tache_partie(args):
         os.makedirs(suivi, exist_ok=True)
         fichier = os.path.join(suivi, f"{blancs}_{noirs}_{id_ouv}.json".replace(" ", "-").replace("@", "-"))
     try:
-        r = jouer_partie(blancs, noirs, ouverture, max_plies, fichier)
+        r = jouer_partie(blancs, noirs, ouverture, max_plies, fichier, id_ouv)
     finally:
         # un Stockfish ouvert garde un thread vivant qui empêche le processus fils de se terminer
         fermer_stockfish()
