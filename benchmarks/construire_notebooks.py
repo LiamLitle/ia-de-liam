@@ -1455,7 +1455,8 @@ On obtient :
 - l'**Elo en partie** de PWN@ab3 (maximum de vraisemblance, ancré sur les `UCI_Elo` de Stockfish) avec un intervalle à 95 % ;
 - toutes les parties en **PGN** + **toutes les positions** (FEN après chaque coup) en CSV.
 
-Pendant que ça tourne : une ligne par partie terminée (qui a gagné), et un **bilan dès qu'un niveau est fini**.
+Pendant que ça tourne : les **échiquiers des parties en cours en direct**, le **tableau des scores** par niveau,
+une ligne par partie terminée (qui a gagné), et un **bilan dès qu'un niveau est fini**.
 Les fichiers de chaque partie sont écrits au fur et à mesure dans `pwn3_parties/stockfish_eloXXXX/`.
 
 Repères : PWN@ab2 a fait **1904** en parties (notebook 03), PWN@ab3 **2345** aux puzzles (notebook 02).
@@ -1573,28 +1574,80 @@ for sf, lignes in par_niveau.items():
     if len(lignes) >= PAR_NIVEAU:
         bilan_niveau(sf, lignes)
 
+# ---- affichage en direct : échiquiers des parties en cours + scores par niveau ----
+import chess.svg
+from concurrent.futures import wait, FIRST_COMPLETED
+from IPython.display import display, HTML
+
+SUIVI = "/tmp/pwn3_en_cours"
+import glob, shutil
+shutil.rmtree(SUIVI, ignore_errors=True); os.makedirs(SUIVI)
+derniers = []   # dernières parties finies (texte)
+
+def ecran():
+    fait_n = sum(len(v) for v in par_niveau.values())
+    total = PAR_NIVEAU * len(STOCKFISH)
+    h = [f"<div style='font-family:sans-serif'>"
+         f"<h3>♟️ {JOUEUR} contre Stockfish — {fait_n}/{total} parties — {(time.time() - t0) / 60:.0f} min</h3>"
+         f"<div style='background:#ddd;width:600px;height:14px;border-radius:7px'>"
+         f"<div style='background:#58a;width:{600 * fait_n / total:.0f}px;height:14px;border-radius:7px'></div></div>"
+         "<table style='margin:10px 0;border-collapse:collapse'><tr><th>Stockfish</th><th>jouées</th>"
+         "<th>✅</th><th>🤝</th><th>❌</th><th>score PWN</th></tr>"]
+    for sf, lignes in par_niveau.items():
+        res = [infos(r)[2] for r in lignes]
+        v, n, d = res.count("victoire"), res.count("nulle"), res.count("défaite")
+        sc = f"{100 * (v + n / 2) / len(res):.0f} %" if res else "–"
+        fond = "#e6f4ea" if len(res) == PAR_NIVEAU else "white"
+        h.append(f"<tr style='background:{fond}'><td style='padding:2px 12px'><b>{sf[3:]}</b></td>"
+                 f"<td style='padding:2px 12px'>{len(res)}/{PAR_NIVEAU}</td><td style='padding:2px 12px'>{v}</td>"
+                 f"<td style='padding:2px 12px'>{n}</td><td style='padding:2px 12px'>{d}</td>"
+                 f"<td style='padding:2px 12px'><b>{sc}</b></td></tr>")
+    h.append("</table><div style='display:flex;flex-wrap:wrap;gap:14px'>")
+    for fich in sorted(glob.glob(f"{SUIVI}/*.json")):
+        try:
+            e = json.load(open(fich))
+        except Exception:
+            continue
+        pwn_blancs = e["blancs"] == JOUEUR
+        adv = e["noirs"] if pwn_blancs else e["blancs"]
+        bd = chess.Board(e["fen"])
+        der = chess.Move.from_uci(e["dernier"]) if e["dernier"] else None
+        svg = chess.svg.board(bd, lastmove=der, size=240, flipped=not pwn_blancs, check=bd.king(bd.turn) if bd.is_check() else None)
+        h.append(f"<div style='text-align:center'>{svg}<br>PWN ({'blancs' if pwn_blancs else 'noirs'}) vs <b>{adv[3:]}</b>"
+                 f"<br>coup {(e['ply'] + 1) // 2}</div>")
+    h.append("</div><p><b>Dernières parties :</b><br>" + "<br>".join(derniers[-8:][::-1]) + "</p></div>")
+    return HTML("".join(h))
+
 t0 = time.time()
+ecran_id = display(ecran(), display_id=True)
 ex = ProcessPoolExecutor(NB_WORKERS, mp_context=mp.get_context("spawn"),
                          initializer=ce.init_worker, initargs=(False, 1, SF, SF_TEMPS))
-futurs = [ex.submit(ce.tache_partie, t) for t in reste]
+en_attente = {ex.submit(ce.tache_partie, t + (SUIVI,)) for t in reste}
+k = 0
 with open(PARTIES, "a") as f:
-    for k, fu in enumerate(as_completed(futurs), 1):
-        try:
-            r = fu.result()
-        except Exception as e:
-            print("erreur :", e)
-            continue
-        f.write(json.dumps(r) + "\n"); f.flush()
-        enregistrer(r)
-        adv, couleur, res = infos(r)
-        par_niveau[adv].append(r)
-        print(f"[{k}/{len(reste)} | {(time.time() - t0) / 60:.0f} min] {EMOJI[res]} contre {adv} ({len(par_niveau[adv])}/{PAR_NIVEAU}) :"
-              f" {r['ouverture']}, PWN avec les {couleur} → {res} ({r['fin']}, {r['plies'] // 2} coups)")
-        if len(par_niveau[adv]) == PAR_NIVEAU:
-            bilan_niveau(adv, par_niveau[adv])
+    while en_attente:
+        finis, en_attente = wait(en_attente, timeout=5, return_when=FIRST_COMPLETED)
+        for fu in finis:
+            k += 1
+            try:
+                r = fu.result()
+            except Exception as e:
+                print("erreur :", e)
+                continue
+            f.write(json.dumps(r) + "\n"); f.flush()
+            enregistrer(r)
+            adv, couleur, res = infos(r)
+            par_niveau[adv].append(r)
+            ligne = (f"{EMOJI[res]} contre {adv} ({len(par_niveau[adv])}/{PAR_NIVEAU}) : {r['ouverture']}, "
+                     f"PWN avec les {couleur} → {res} ({r['fin']}, {r['plies'] // 2} coups)")
+            derniers.append(ligne)
+            print(f"[{k}/{len(reste)} | {(time.time() - t0) / 60:.0f} min] {ligne}")
+            if len(par_niveau[adv]) == PAR_NIVEAU:
+                bilan_niveau(adv, par_niveau[adv])
+        ecran_id.update(ecran())
         if time.time() - t0 > BUDGET_H * 3600:
             print("budget temps atteint, on s'arrête là")
-            for x in futurs:
+            for x in en_attente:
                 x.cancel()
             break
 ex.shutdown(wait=False, cancel_futures=True)

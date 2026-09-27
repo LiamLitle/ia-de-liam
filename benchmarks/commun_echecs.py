@@ -5,6 +5,7 @@ même alpha-bêta + quiescence. Seule différence : pas de bruit ni de coups au 
 on veut mesurer la force réelle.
 """
 import glob
+import json
 import os
 import shutil
 import stat
@@ -440,7 +441,15 @@ def resoudre_puzzle(joueur, fen, moves):
 
 # -- parties -------------------------------------------------------------------------
 
-def jouer_partie(blancs, noirs, ouverture, max_plies=300):
+def ecrire_suivi(suivi, blancs, noirs, b, dernier):
+    # position en cours dans un petit fichier JSON, lu par le notebook pour l'afficher en direct
+    tmp = suivi + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"blancs": blancs, "noirs": noirs, "fen": b.fen(), "dernier": dernier, "ply": b.ply()}, f)
+    os.replace(tmp, suivi)
+
+
+def jouer_partie(blancs, noirs, ouverture, max_plies=300, suivi=None):
     """ouverture = liste de coups UCI joués d'office ; renvoie un dict (résultat, pgn, temps)"""
     import chess.pgn
     b = chess.Board()
@@ -462,6 +471,8 @@ def jouer_partie(blancs, noirs, ouverture, max_plies=300):
         positions.append({"ply": b.ply() + 1, "joueur": j, "san": b.san(mv), "uci": mv.uci(), "secondes": round(dt, 3)})
         b.push(mv)
         positions[-1]["fen"] = b.fen()
+        if suivi:
+            ecrire_suivi(suivi, blancs, noirs, b, mv.uci())
     res = b.result(claim_draw=True) if b.is_game_over(claim_draw=True) else "1/2-1/2"
     fin = b.outcome(claim_draw=True)
     jeu = chess.pgn.Game.from_board(b)
@@ -505,11 +516,18 @@ def tache_puzzle(args):
 
 
 def tache_partie(args):
-    blancs, noirs, ouverture, max_plies, id_ouv = args
+    blancs, noirs, ouverture, max_plies, id_ouv = args[:5]
+    suivi = args[5] if len(args) > 5 else None   # dossier de suivi en direct (facultatif)
+    fichier = None
+    if suivi:
+        os.makedirs(suivi, exist_ok=True)
+        fichier = os.path.join(suivi, f"{blancs}_{noirs}_{id_ouv}.json".replace(" ", "-").replace("@", "-"))
     try:
-        r = jouer_partie(blancs, noirs, ouverture, max_plies)
+        r = jouer_partie(blancs, noirs, ouverture, max_plies, fichier)
     finally:
         # un Stockfish ouvert garde un thread vivant qui empêche le processus fils de se terminer
         fermer_stockfish()
+        if fichier and os.path.exists(fichier):
+            os.remove(fichier)
     r["ouverture"] = id_ouv
     return r
