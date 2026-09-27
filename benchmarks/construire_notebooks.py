@@ -805,8 +805,8 @@ SORTIE = "/kaggle/working" if os.path.isdir("/kaggle/working") else "."
 print("device :", DEVICE, "| mteb", mteb.__version__)
 
 # ---- réglages ----
-NOM_MIND = "MIND v2"   # pour tester une autre version : "MIND reFINEd" + MIND_DOSSIER ci-dessous
-MIND_DOSSIER = None    # ex : "/kaggle/input/<notebook-05>/mind-refined" (dossier sentence-transformers)
+NOM_MIND = "MIND v2"   # pour tester une autre version : "FineMIND" + MIND_DOSSIER ci-dessous
+MIND_DOSSIER = None    # ex : "/kaggle/input/<notebook-05>/finemind" (dossier sentence-transformers)
 LEGER = False          # True : quelques tâches MTEB seulement (~30 min)
 BASELINES = [
     "Geotrend/distilbert-base-en-fr-cased",
@@ -1035,7 +1035,7 @@ plt.tight_layout(); plt.savefig(f"{SORTIE}/bench4_mteb_fr.png", dpi=120); plt.sh
 
 NB5 = [
     ("md", r"""
-# 🧠 MIND reFINEd — fine-tuning de MIND v2
+# 🧠 FineMIND — fine-tuning de MIND v2
 
 On **repart de MIND v2 tel quel** (mêmes 69 M de paramètres, même architecture, 256 dimensions) et on continue son
 entraînement avec deux améliorations, **sans rien changer d'autre** pour savoir exactement ce qu'elles apportent :
@@ -1048,8 +1048,8 @@ entraînement avec deux améliorations, **sans rien changer d'autre** pour savoi
 Uniquement les parties **train** des datasets (déjà vues par MIND v2), le **dev** STSb-fr sert à garder le meilleur point de contrôle,
 le **test** n'est regardé qu'à la fin.
 
-⚙️ Kaggle : **GPU T4**, **Internet ON**. Durée : ~30–60 min. Résultat : le dossier `mind-refined/` (+ `mind-refined.zip`) dans l'Output.
-Ensuite : notebook 04 avec `NOM_MIND = "MIND reFINEd"` pour le comparer à v2 sur MTEB.
+⚙️ Kaggle : **GPU T4**, **Internet ON**. Durée : ~30–60 min. Résultat : le dossier `finemind/` (+ `finemind.zip`) dans l'Output.
+Ensuite : notebook 04 avec `NOM_MIND = "FineMIND"` pour le comparer à v2 sur MTEB.
 """),
     ("code", r"""
 !pip install -q -U "sentence-transformers[train]" datasets accelerate
@@ -1076,7 +1076,7 @@ SORTIE = "/kaggle/working" if os.path.isdir("/kaggle/working") else "."
 print("device :", DEVICE)
 
 # ---- réglages ----
-NOM_SORTIE = "mind-refined"   # MIND reFINEd
+NOM_SORTIE = "finemind"   # FineMIND
 N_TRIPLETS_XNLI = 150_000   # nombre max de triplets XNLI
 TAILLE_LOT = 512            # lot « virtuel » (CachedMNRL le découpe en mini-lots)
 MINI_LOT = 64               # ce qui passe réellement dans le GPU d'un coup
@@ -1191,7 +1191,7 @@ print(np.round(e @ e.T, 3))
 ### Et après ?
 - Le STSb-fr **test** ne doit être regardé qu'une fois : c'est le verdict. Un gain sur le **dev** seul ne suffit pas.
 - Pour le vrai verdict (25 tâches) : dans le notebook 04, **Add Input → l'Output de ce notebook**, puis
-  `NOM_MIND = "MIND reFINEd"` et `MIND_DOSSIER = "/kaggle/input/<nom>/mind-refined"` (adapter le chemin), `LEGER = False`.
+  `NOM_MIND = "FineMIND"` et `MIND_DOSSIER = "/kaggle/input/<nom>/finemind"` (adapter le chemin), `LEGER = False`.
 - Regarde surtout **PairClassification / STS / Reranking** : c'est là que les négatifs difficiles doivent aider.
 """),
 ]
@@ -1202,4 +1202,4 @@ if __name__ == "__main__":
     ecrire("02_echecs_puzzles_lichess.ipynb", NB2)
     ecrire("03_echecs_tournoi_elo.ipynb", NB3)
     ecrire("04_mind_embeddings_mteb_fr.ipynb", NB4)
-    ecrire("05_mind_refined_finetuning.ipynb", NB5)
+    ecrire("05_finemind_finetuning.ipynb", NB5)
