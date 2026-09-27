@@ -805,7 +805,7 @@ SORTIE = "/kaggle/working" if os.path.isdir("/kaggle/working") else "."
 print("device :", DEVICE, "| mteb", mteb.__version__)
 
 # ---- réglages ----
-NOM_MIND = "MIND v2"   # pour tester une autre version : "FineMIND" + MIND_DOSSIER ci-dessous
+NOM_MIND = "MIND v2"   # pour tester une autre version : "FineMIND", "FineMIND-2"... + MIND_DOSSIER ci-dessous
 MIND_DOSSIER = None    # ex : "/kaggle/input/<notebook-05>/finemind" (dossier sentence-transformers)
 LEGER = False          # True : quelques tâches MTEB seulement (~30 min)
 BASELINES = [
@@ -1201,9 +1201,248 @@ print(np.round(e @ e.T, 3))
 ]
 
 
+# =====================================================================================
+# 06 — FineMIND-2 : questions → réponses, sans oublier le reste
+# =====================================================================================
+
+NB6 = [
+    ("md", r"""
+# 🧠 FineMIND-2 — apprendre les questions → réponses
+
+On repart de **FineMIND** (mêmes 69 M de paramètres) pour corriger son plus gros point faible sur MTEB français :
+la **recherche de documents** (Retrieval 37,7, contre 44 à 53 pour les meilleurs).
+
+1. **Nouvelles données** : des paires **question → paragraphe qui contient la réponse** (PIAF, FrenchQA : Wikipédia en français).
+   MIND n'a jamais appris ça, il n'a vu que des paraphrases.
+2. **Rappel des anciennes données** (STSb, XNLI, PAWS-X) mélangées aux nouvelles, pour qu'il **n'oublie pas** ce qu'il savait.
+   FineMIND avait perdu ~2 points en regroupement de textes : c'est ce qu'on veut éviter cette fois.
+3. Le meilleur point de contrôle est choisi sur **deux juges à la fois** : STSb-fr dev **et** une recherche question → paragraphe
+   sur des paragraphes jamais vus à l'entraînement.
+
+Aucun jeu de données de MTEB n'est utilisé (pas d'Alloprof, Mintaka, XPQA, BSARD, Syntec) : le notebook 04 reste honnête.
+
+⚙️ Kaggle : **GPU T4**, **Internet ON**, **Add Input → ton dataset `finemind`**. Durée : ~1 h.
+Résultat : `finemind-2/` (+ `finemind-2.zip`) dans l'Output. Ensuite : notebook 04 avec `NOM_MIND = "FineMIND-2"`.
+"""),
+    ("code", r"""
+!pip install -q -U "sentence-transformers[train]" datasets accelerate
+"""),
+    ("code", r"""
+import os, glob, shutil, random
+import numpy as np, pandas as pd, torch
+from datasets import load_dataset, Dataset, DatasetDict
+from huggingface_hub import hf_hub_download
+from sentence_transformers import SentenceTransformer, SentenceTransformerTrainer, SentenceTransformerTrainingArguments, losses
+from sentence_transformers.evaluation import EmbeddingSimilarityEvaluator, InformationRetrievalEvaluator, SequentialEvaluator
+try:
+    from sentence_transformers.sentence_transformer.training_args import BatchSamplers, MultiDatasetBatchSamplers
+except ImportError:
+    from sentence_transformers.training_args import BatchSamplers, MultiDatasetBatchSamplers
+
+try:
+    from kaggle_secrets import UserSecretsClient
+    os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN")
+except Exception:
+    pass
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+SORTIE = "/kaggle/working" if os.path.isdir("/kaggle/working") else "."
+print("device :", DEVICE)
+
+# ---- réglages ----
+NOM_DEPART = "FineMIND"
+DOSSIER_DEPART = None        # None = cherche tout seul un dossier « finemind » dans /kaggle/input
+NOM_SORTIE = "finemind-2"    # FineMIND-2
+SOURCES_QR = ["CATIE-AQ/frenchQA", "AgentPublic/piaf", "etalab-ia/piaf"]   # questions → paragraphes (on prend ce qui marche)
+N_QR = 100_000               # paires question → paragraphe max
+N_DEV_QR = 1_000             # paragraphes mis de côté pour juger la recherche
+N_RAPPEL_XNLI = 40_000       # paires XNLI « implication » (données de MIND v2)
+N_RAPPEL_TRIPLETS = 20_000   # triplets XNLI avec négatif (données de FineMIND)
+TAILLE_LOT = 512
+MINI_LOT = 32                # plus petit qu'au 05 : les paragraphes sont plus longs que des phrases
+EPOQUES = 1
+LR = 1e-5
+SEED = 42
+random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
+"""),
+    ("md", r"""
+## Point de départ : FineMIND
+"""),
+    ("code", r"""
+if not DOSSIER_DEPART:
+    trouve = sorted(os.path.dirname(p) for p in glob.glob("/kaggle/input/**/modules.json", recursive=True)
+                    if "finemind" in p.lower() and "finemind-2" not in p.lower())
+    assert trouve, "FineMIND introuvable : Add Input → ton dataset finemind (ou mets son chemin dans DOSSIER_DEPART)"
+    DOSSIER_DEPART = trouve[0]
+print("départ :", DOSSIER_DEPART)
+modele = SentenceTransformer(DOSSIER_DEPART, device=DEVICE)
+print("longueur max :", modele.max_seq_length, "tokens")
+"""),
+    ("md", r"""
+## Nouvelles données : questions → paragraphes
+"""),
+    ("code", r"""
+def charger_qr(nom):
+    ds = None
+    for options in ({}, {"revision": "refs/convert/parquet"}):
+        try:
+            ds = load_dataset(nom, split="train", **options)
+            break
+        except Exception as e:
+            erreur = e
+    if ds is None:
+        print(f"  ✗ {nom} : {type(erreur).__name__} {str(erreur)[:150]}")
+        return None
+    df = ds.to_pandas()
+    q = next((c for c in ["question", "query"] if c in df.columns), None)
+    c = next((c for c in ["context", "passage", "paragraph", "positive"] if c in df.columns), None)
+    if not q or not c:
+        print(f"  ✗ {nom} : colonnes inconnues {list(df.columns)}")
+        return None
+    # questions « sans réponse dans le paragraphe » (style SQuAD v2) : ce ne sont pas de vraies paires
+    if "answer" in df.columns:
+        df = df[df.answer.notna() & (df.answer.astype(str).str.strip() != "")]
+    elif "answers" in df.columns:
+        df = df[df.answers.map(lambda a: len(a["text"]) > 0 if isinstance(a, dict) else True)]
+    print(f"  ✓ {nom} : {len(df):,} lignes")
+    return df[[q, c]].rename(columns={q: "anchor", c: "positive"}).astype(str)
+
+qr = pd.concat([d for d in map(charger_qr, SOURCES_QR) if d is not None], ignore_index=True)
+qr["anchor"], qr["positive"] = qr.anchor.str.strip(), qr.positive.str.strip()
+# paragraphes trop longs coupés à 256 tokens : la réponse risquerait de disparaître
+qr = qr[(qr.anchor.str.len() > 10) & (qr.positive.str.len().between(80, 1200))].drop_duplicates("anchor")
+print(f"{len(qr):,} paires question → paragraphe, {qr.positive.nunique():,} paragraphes différents")
+
+# on met de côté des PARAGRAPHES entiers (et toutes leurs questions) : jamais vus à l'entraînement
+paragraphes = qr.positive.drop_duplicates().sample(frac=1, random_state=SEED)
+dev_p = set(paragraphes.iloc[:N_DEV_QR])
+dev_qr = qr[qr.positive.isin(dev_p)].drop_duplicates("positive")
+train_qr = qr[~qr.positive.isin(dev_p)]
+train_qr = train_qr.sample(min(N_QR, len(train_qr)), random_state=SEED)
+
+corpus_txt = list(dev_p) + paragraphes.iloc[N_DEV_QR:N_DEV_QR + 4_000].tolist()   # + 4000 paragraphes pièges
+corpus = {f"p{i}": t for i, t in enumerate(corpus_txt)}
+id_de = {t: k for k, t in corpus.items()}
+questions = {f"q{i}": q for i, q in enumerate(dev_qr.anchor)}
+pertinents = {f"q{i}": {id_de[p]} for i, p in enumerate(dev_qr.positive)}
+eval_qr = InformationRetrievalEvaluator(questions, corpus, pertinents, name="qr-dev",
+                                        show_progress_bar=False, batch_size=64)
+print("exemple :", train_qr.iloc[0].to_dict())
+"""),
+    ("md", r"""
+## Rappel des anciennes données (pour ne pas oublier)
+"""),
+    ("code", r"""
+def stsb_df(split):
+    return pd.read_parquet(hf_hub_download("PhilipMay/stsb_multi_mt", f"fr/{split}-00000-of-00001.parquet", repo_type="dataset"))
+
+# STSb train : les paires très proches (note ≥ 4 sur 5)
+sts = stsb_df("train")
+sts = sts[sts.similarity_score >= 4][["sentence1", "sentence2"]].rename(columns={"sentence1": "anchor", "sentence2": "positive"})
+
+# XNLI : implications (comme MIND v2) + triplets avec contradiction (comme FineMIND)
+xnli = load_dataset("facebook/xnli", "fr", split="train").to_pandas()
+ent = xnli[xnli.label == 0].drop_duplicates("premise")[["premise", "hypothesis"]].rename(columns={"hypothesis": "positive"})
+con = xnli[xnli.label == 2].drop_duplicates("premise")[["premise", "hypothesis"]].rename(columns={"hypothesis": "negative"})
+ent = ent[ent.premise.str.len() > 15]
+triplets = ent.merge(con, on="premise").rename(columns={"premise": "anchor"})
+triplets = triplets.sample(min(N_RAPPEL_TRIPLETS, len(triplets)), random_state=SEED)[["anchor", "positive", "negative"]]
+paires_xnli = ent[~ent.premise.isin(triplets.anchor)].rename(columns={"premise": "anchor"})
+paires_xnli = paires_xnli.sample(min(N_RAPPEL_XNLI, len(paires_xnli)), random_state=SEED)
+
+# PAWS-X : paraphrases
+paws = load_dataset("google-research-datasets/paws-x", "fr", split="train").to_pandas()
+paws = paws[(paws.label == 1) & (paws.sentence1.str.len() > 15) & (paws.sentence2.str.len() > 15)]
+paws = paws.drop_duplicates("sentence1")[["sentence1", "sentence2"]].rename(columns={"sentence1": "anchor", "sentence2": "positive"})
+
+train = DatasetDict({
+    "questions_reponses": Dataset.from_pandas(train_qr, preserve_index=False),
+    "stsb": Dataset.from_pandas(sts, preserve_index=False),
+    "xnli_paires": Dataset.from_pandas(paires_xnli, preserve_index=False),
+    "xnli_triplets": Dataset.from_pandas(triplets, preserve_index=False),
+    "paws_paires": Dataset.from_pandas(paws, preserve_index=False),
+})
+total = sum(len(d) for d in train.values())
+for k, d in train.items():
+    print(f"{k:20s} {len(d):>7,}  ({100 * len(d) / total:.0f} %)")
+"""),
+    ("code", r"""
+def eval_sts(split):
+    d = stsb_df(split)
+    return EmbeddingSimilarityEvaluator(d.sentence1.tolist(), d.sentence2.tolist(), (d.similarity_score / 5).tolist(),
+                                        name=f"stsb-fr-{split}")
+eval_dev, eval_test = eval_sts("dev"), eval_sts("test")
+# juge pendant l'entraînement : moyenne de STSb dev (Spearman) et de la recherche (nDCG@10)
+juge = SequentialEvaluator([eval_dev, eval_qr], main_score_function=lambda s: float(np.mean(s)))
+
+def bilan(m):
+    r = {**eval_dev(m), **eval_test(m), **eval_qr(m)}
+    return {"STSb-fr dev": 100 * r["stsb-fr-dev_spearman_cosine"],
+            "STSb-fr test": 100 * r["stsb-fr-test_spearman_cosine"],
+            "Q→R nDCG@10": 100 * r["qr-dev_cosine_ndcg@10"],
+            "Q→R trouvé en 1ᵉʳ": 100 * r["qr-dev_cosine_accuracy@1"]}
+avant = bilan(modele)
+print(NOM_DEPART, {k: round(v, 2) for k, v in avant.items()})
+"""),
+    ("md", r"""
+## Entraînement
+"""),
+    ("code", r"""
+perte = losses.CachedMultipleNegativesRankingLoss(modele, mini_batch_size=MINI_LOT)
+args = SentenceTransformerTrainingArguments(
+    output_dir=f"{SORTIE}/checkpoints",
+    num_train_epochs=EPOQUES,
+    per_device_train_batch_size=TAILLE_LOT,
+    learning_rate=LR,
+    warmup_ratio=0.1,
+    fp16=DEVICE == "cuda",
+    batch_sampler=BatchSamplers.NO_DUPLICATES,          # pas deux fois le même paragraphe dans un lot
+    multi_dataset_batch_sampler=MultiDatasetBatchSamplers.PROPORTIONAL,
+    eval_strategy="steps", eval_steps=0.1,              # 10 évaluations réparties sur tout l'entraînement
+    save_strategy="steps", save_steps=0.1, save_total_limit=2,
+    load_best_model_at_end=True, metric_for_best_model="eval_sequential_score",
+    logging_steps=10, report_to="none", seed=SEED,
+)
+entraineur = SentenceTransformerTrainer(model=modele, args=args, train_dataset=train, loss=perte, evaluator=juge)
+entraineur.train()
+"""),
+    ("md", r"""
+## Résultat et sauvegarde
+"""),
+    ("code", r"""
+apres = bilan(modele)
+tab = pd.DataFrame({NOM_DEPART: avant, NOM_SORTIE: apres}).round(2)
+tab["écart"] = (tab[NOM_SORTIE] - tab[NOM_DEPART]).round(2)
+print(tab)
+
+DOSSIER = f"{SORTIE}/{NOM_SORTIE}"
+modele.save(DOSSIER)
+shutil.make_archive(DOSSIER, "zip", DOSSIER)
+shutil.rmtree(f"{SORTIE}/checkpoints", ignore_errors=True)
+print("modèle sauvegardé :", DOSSIER, "et", DOSSIER + ".zip")
+
+q = modele.encode(["Comment faire un gâteau au chocolat ?"])
+p = modele.encode(["Faire fondre le chocolat avec le beurre, ajouter les œufs, le sucre et la farine, puis cuire 25 minutes à 180 °C.",
+                   "Le chocolat est produit à partir des fèves de cacao, cultivées surtout en Afrique de l'Ouest.",
+                   "La bourse de Paris a fortement chuté ce matin."])
+print("question → recette / histoire du chocolat / bourse :", np.round(q @ p.T, 3))
+e = modele.encode(["Le chat dort sur le canapé.", "Un chat fait la sieste sur le sofa.", "Le chat ne dort pas sur le canapé."])
+print(np.round(e @ e.T, 3))
+"""),
+    ("md", r"""
+### Et après ?
+- **Q→R** doit monter nettement (c'est le but), et **STSb-fr** doit rester à peu près au niveau de FineMIND.
+- Le vrai verdict : notebook 04, **Add Input → l'Output de ce notebook** (ou un dataset `finemind-2`), puis
+  `NOM_MIND = "FineMIND-2"`, `MIND_DOSSIER = "/kaggle/input/<chemin>/finemind-2"`, `LEGER = False`.
+- À regarder : **Retrieval** et **Reranking** doivent monter, **Clustering** ne doit pas redescendre.
+"""),
+]
+
+
 if __name__ == "__main__":
     ecrire("01_echecs_precision_evaluation.ipynb", NB1)
     ecrire("02_echecs_puzzles_lichess.ipynb", NB2)
     ecrire("03_echecs_tournoi_elo.ipynb", NB3)
     ecrire("04_mind_embeddings_mteb_fr.ipynb", NB4)
     ecrire("05_finemind_finetuning.ipynb", NB5)
+    ecrire("06_finemind2_questions_reponses.ipynb", NB6)
