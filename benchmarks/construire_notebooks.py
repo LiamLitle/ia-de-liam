@@ -1439,6 +1439,194 @@ print(np.round(e @ e.T, 3))
 ]
 
 
+# =====================================================================================
+# 07 — PWN@ab3 contre une échelle de Stockfish
+# =====================================================================================
+
+NB7 = [
+    ("md", r'''
+# ♟️ PWN3 vs Stockfish — jusqu'où monte PWN@ab3 ?
+
+**PWN@ab3** (poids SPAWN + alpha-bêta profondeur 3 + quiescence) affronte **Stockfish 17 à plusieurs niveaux**,
+du plus faible au plus fort. Chaque niveau joue les mêmes **ouvertures**, une fois avec chaque couleur.
+
+On obtient :
+- le **score contre chaque niveau** (la courbe doit descendre de ~100 % à ~0 %) ;
+- l'**Elo en partie** de PWN@ab3 (maximum de vraisemblance, ancré sur les `UCI_Elo` de Stockfish) avec un intervalle à 95 % ;
+- toutes les parties en **PGN**.
+
+Repères : PWN@ab2 a fait **1904** en parties (notebook 03), PWN@ab3 **2345** aux puzzles (notebook 02).
+
+⚠️ L'`UCI_Elo` de Stockfish est calibré contre des moteurs (échelle CCRL) : c'est un ordre de grandeur, pas un Elo Lichess ou FIDE.
+
+⚙️ Kaggle : **Internet ON**. L'alpha-bêta tourne sur **CPU**, le GPU n'est pas nécessaire.
+Durée : ~4–6 h (ab3 réfléchit ~5–15 s par coup) → lance-le en **Save & Run All (Commit)**.
+Arrêt propre après `BUDGET_H` heures : les parties jouées sont gardées et analysées.
+'''),
+    ("code", INSTALL_ECHECS),
+    ("code", MODULE_ECHECS),
+    ("code", IMPORT_ECHECS),
+    ("code", r'''
+SF = ce.installer_stockfish(os.path.join(os.getcwd(), "stockfish"))
+print("Stockfish :", SF)
+'''),
+    ("code", r'''
+# ---- réglages ----
+JOUEUR = "PWN@ab3"
+NIVEAUX = [1500, 1800, 2100, 2400, 2700]   # UCI_Elo de Stockfish (de 1320 à 3190)
+SF_TEMPS = 0.1          # secondes par coup pour Stockfish
+N_OUVERTURES = 8        # parties par niveau = 2 x N_OUVERTURES
+MAX_PLIES = 200         # au-delà : nulle (évite les finales interminables)
+NB_WORKERS = os.cpu_count()
+BUDGET_H = 11           # on arrête de lancer des parties après ce temps (limite Kaggle : 12 h)
+SEED = 0
+SORTIE = "/kaggle/working" if os.path.isdir("/kaggle/working") else "."
+
+OUVERTURES = {
+    "Italienne": "e2e4 e7e5 g1f3 b8c6 f1c4 f8c5",
+    "Espagnole": "e2e4 e7e5 g1f3 b8c6 f1b5 a7a6",
+    "Sicilienne Najdorf": "e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3 a7a6",
+    "Française": "e2e4 e7e6 d2d4 d7d5 b1c3 g8f6",
+    "Caro-Kann": "e2e4 c7c6 d2d4 d7d5 e4e5 c8f5",
+    "Gambit dame refusé": "d2d4 d7d5 c2c4 e7e6 b1c3 g8f6",
+    "Slave": "d2d4 d7d5 c2c4 c7c6 g1f3 g8f6",
+    "Est-indienne": "d2d4 g8f6 c2c4 g7g6 b1c3 f8g7 e2e4 d7d6",
+    "Nimzo-indienne": "d2d4 g8f6 c2c4 e7e6 b1c3 f8b4",
+    "Anglaise": "c2c4 e7e5 b1c3 g8f6 g1f3 b8c6",
+    "Scandinave": "e2e4 d7d5 e4d5 d8d5 b1c3 d5a5",
+    "Londres": "d2d4 d7d5 g1f3 g8f6 c1f4 c7c5",
+    "Pirc": "e2e4 d7d6 d2d4 g8f6 b1c3 g7g6",
+    "Hollandaise": "d2d4 f7f5 g1f3 g8f6 g2g3 e7e6",
+    "Écossaise": "e2e4 e7e5 g1f3 b8c6 d2d4 e5d4 f3d4 g8f6",
+    "Réti": "g1f3 d7d5 g2g3 g8f6 f1g2 e7e6",
+}
+for nom, coups in OUVERTURES.items():  # vérifie que les ouvertures sont légales
+    b = chess.Board()
+    for u in coups.split():
+        assert chess.Move.from_uci(u) in b.legal_moves, (nom, u)
+        b.push_uci(u)
+OUV = dict(list(OUVERTURES.items())[:N_OUVERTURES])
+
+STOCKFISH = {f"SF@elo{e}": e for e in NIVEAUX}
+taches = []
+for sf in STOCKFISH:
+    for nom, coups in OUV.items():
+        taches.append((JOUEUR, sf, coups.split(), MAX_PLIES, nom))
+        taches.append((sf, JOUEUR, coups.split(), MAX_PLIES, nom))
+random.Random(SEED).shuffle(taches)  # si ça coupe, chaque niveau a à peu près le même nombre de parties
+print(len(STOCKFISH), "niveaux,", len(taches), "parties")
+'''),
+    ("md", r'''
+## Parties (en parallèle, avec reprise)
+'''),
+    ("code", r'''
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm.auto import tqdm
+
+PARTIES = f"{SORTIE}/pwn3_parties.jsonl"
+fait = set()
+if os.path.exists(PARTIES):
+    for l in open(PARTIES):
+        r = json.loads(l); fait.add((r["blancs"], r["noirs"], r["ouverture"]))
+reste = [t for t in taches if (t[0], t[1], t[4]) not in fait]
+print(len(fait), "déjà jouées,", len(reste), "à jouer")
+
+t0 = time.time()
+ex = ProcessPoolExecutor(NB_WORKERS, mp_context=mp.get_context("spawn"),
+                         initializer=ce.init_worker, initargs=(False, 1, SF, SF_TEMPS))
+futurs = [ex.submit(ce.tache_partie, t) for t in reste]
+with open(PARTIES, "a") as f:
+    for fu in tqdm(as_completed(futurs), total=len(futurs)):
+        try:
+            f.write(json.dumps(fu.result()) + "\n"); f.flush()
+        except Exception as e:
+            print("erreur :", e)
+        if time.time() - t0 > BUDGET_H * 3600:
+            print("budget temps atteint, on s'arrête là")
+            for x in futurs:
+                x.cancel()
+            break
+ex.shutdown(wait=False, cancel_futures=True)
+'''),
+    ("md", r'''
+## Résultats
+'''),
+    ("code", r'''
+parties = pd.DataFrame([json.loads(l) for l in open(PARTIES)])
+parties = parties.drop_duplicates(["blancs", "noirs", "ouverture"])
+parties = parties[parties.blancs.isin(STOCKFISH) | parties.noirs.isin(STOCKFISH)]
+parties["adversaire"] = np.where(parties.blancs == JOUEUR, parties.noirs, parties.blancs)
+parties["couleur"] = np.where(parties.blancs == JOUEUR, "blancs", "noirs")
+gagne = {"1-0": "blancs", "0-1": "noirs"}
+parties["resultat_pwn"] = [
+    "nulle" if r == "1/2-1/2" else ("victoire" if gagne[r] == c else "défaite")
+    for r, c in zip(parties.resultat, parties.couleur)]
+parties["score"] = parties.resultat_pwn.map({"victoire": 1.0, "nulle": 0.5, "défaite": 0.0})
+with open(f"{SORTIE}/pwn3_parties.pgn", "w") as f:
+    f.write("\n\n".join(parties.pgn))
+
+tab = parties.groupby("adversaire").agg(
+    victoires=("resultat_pwn", lambda s: (s == "victoire").sum()),
+    nulles=("resultat_pwn", lambda s: (s == "nulle").sum()),
+    defaites=("resultat_pwn", lambda s: (s == "défaite").sum()),
+    parties=("score", "size"),
+    score_pct=("score", lambda s: 100 * s.mean()),
+    score_blancs=("score", lambda s: 100 * s[parties.loc[s.index, "couleur"] == "blancs"].mean()),
+    score_noirs=("score", lambda s: 100 * s[parties.loc[s.index, "couleur"] == "noirs"].mean()),
+)
+tab["Elo Stockfish"] = tab.index.map(STOCKFISH)
+tab = tab.sort_values("Elo Stockfish")
+print(len(parties), "parties | fins :", parties.fin.value_counts().to_dict())
+print("temps moyen par coup de", JOUEUR, ":",
+      round(pd.concat([parties[parties.blancs == JOUEUR].s_par_coup_blancs,
+                       parties[parties.noirs == JOUEUR].s_par_coup_noirs]).mean(), 2), "s")
+tab.round(1)
+'''),
+    ("code", r'''
+from scipy.optimize import minimize_scalar
+
+def elo_mle(df):
+    """Elo de PWN par maximum de vraisemblance, les niveaux Stockfish étant fixés (nulle = ½ victoire)"""
+    e_adv, s = df.adversaire.map(STOCKFISH).to_numpy(), df.score.to_numpy()
+    def nll(r):
+        p = np.clip(1 / (1 + 10 ** ((e_adv - r) / 400)), 1e-9, 1 - 1e-9)
+        return -np.sum(s * np.log(p) + (1 - s) * np.log(1 - p))
+    return minimize_scalar(nll, bounds=(0, 4000), method="bounded").x
+
+elo = elo_mle(parties)
+rng = np.random.default_rng(SEED)
+boot = [elo_mle(parties.sample(len(parties), replace=True, random_state=int(rng.integers(1e9)))) for _ in range(500)]
+bas, haut = np.percentile(boot, [2.5, 97.5])
+print(f"Elo de {JOUEUR} en partie : {elo:.0f}  (IC 95 % : {bas:.0f} – {haut:.0f})")
+pd.DataFrame([{"joueur": JOUEUR, "Elo": elo, "IC 95 % bas": bas, "IC 95 % haut": haut, "parties": len(parties)}]) \
+  .to_csv(f"{SORTIE}/pwn3_elo.csv", index=False)
+tab.to_csv(f"{SORTIE}/pwn3_par_niveau.csv")
+'''),
+    ("code", r'''
+fig, ax = plt.subplots(figsize=(9, 4.5))
+x = np.linspace(min(NIVEAUX) - 100, max(NIVEAUX) + 100, 200)
+ax.plot(x, 100 / (1 + 10 ** ((x - elo) / 400)), color="gray", lw=1, ls="--", label=f"attendu pour Elo {elo:.0f}")
+ax.bar(tab["Elo Stockfish"], tab.score_pct, width=120, color="#58a", label="score réel de " + JOUEUR)
+for e, v, n in zip(tab["Elo Stockfish"], tab.score_pct, tab.parties):
+    ax.text(e, v + 2, f"{v:.0f} %", ha="center", fontsize=9)
+ax.axhline(50, color="black", lw=0.5)
+ax.axvline(elo, color="#c55", lw=1.5, label=f"Elo estimé {elo:.0f} [{bas:.0f}–{haut:.0f}]")
+ax.set_xticks(NIVEAUX); ax.set_xlabel("niveau de Stockfish (UCI_Elo)"); ax.set_ylabel("score de PWN@ab3 (%)")
+ax.set_ylim(0, 110); ax.set_title(f"{JOUEUR} contre Stockfish 17"); ax.legend(loc="upper right", fontsize=8)
+plt.tight_layout(); plt.savefig(f"{SORTIE}/pwn3_vs_stockfish.png", dpi=120); plt.show()
+'''),
+    ("md", r'''
+### Comment lire les résultats
+- Le niveau où le score passe sous **50 %**, c'est à peu près l'Elo de PWN@ab3.
+- Si PWN fait encore > 50 % contre le niveau le plus fort, ajoute des niveaux plus hauts dans `NIVEAUX` (ex. 2700, 2900) et relance :
+  les parties déjà jouées sont gardées.
+- Avec 16 parties par niveau (80 au total), l'intervalle fait environ ±70–120 Elo. Pour plus de précision : `N_OUVERTURES = 12` (plus long).
+- Beaucoup de fins `MAX_PLIES` ou de nulles par répétition → PWN ne sait pas convertir un avantage en finale.
+'''),
+]
+
+
 if __name__ == "__main__":
     ecrire("01_echecs_precision_evaluation.ipynb", NB1)
     ecrire("02_echecs_puzzles_lichess.ipynb", NB2)
@@ -1446,3 +1634,4 @@ if __name__ == "__main__":
     ecrire("04_mind_embeddings_mteb_fr.ipynb", NB4)
     ecrire("05_finemind_finetuning.ipynb", NB5)
     ecrire("06_finemind2_questions_reponses.ipynb", NB6)
+    ecrire("07_pwn3_vs_stockfish.ipynb", NB7)

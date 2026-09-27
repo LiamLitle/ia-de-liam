@@ -1,6 +1,6 @@
 # Benchmarks Kaggle — P.A.W.N. et MIND
 
-6 notebooks prêts à lancer sur Kaggle, chacun autonome (il télécharge tout seul les poids depuis ce dépôt GitHub).
+7 notebooks prêts à lancer sur Kaggle, chacun autonome (il télécharge tout seul les poids depuis ce dépôt GitHub).
 
 | Notebook | Ce qu'il mesure | Durée estimée (GPU T4) |
 |---|---|---|
@@ -10,6 +10,7 @@
 | `04_mind_embeddings_mteb_fr.ipynb` | **MIND** vs 5 modèles de référence : STSb fr / en / fr↔en, vitesse, et le benchmark officiel **MTEB français** (25 tâches) | ~2–4 h (`LEGER=True` : ~30 min) |
 | `05_finemind_finetuning.ipynb` | **FineMIND** : fine-tuning de MIND v2 (négatifs difficiles XNLI/PAWS-X + lots de 512), mêmes 69 M de paramètres ; puis comparer v2 et FineMIND avec le notebook 04 (`NOM_MIND`, `MIND_DOSSIER`) | ~30–60 min |
 | `06_finemind2_questions_reponses.ipynb` | **FineMIND-2** : repart de FineMIND, apprend les **questions → paragraphes** (PIAF / FrenchQA) avec un **rappel** des anciennes données (STSb, XNLI, PAWS-X) pour ne rien oublier ; puis notebook 04 avec `NOM_MIND = "FineMIND-2"` | ~1 h |
+| `07_pwn3_vs_stockfish.ipynb` | **PWN@ab3 contre Stockfish 17** à 1500 / 1800 / 2100 / 2400 / 2700 Elo : score par niveau, **Elo en partie** ± intervalle, courbe, PGN | ~4–6 h |
 
 Les modèles d'échecs testés :
 
