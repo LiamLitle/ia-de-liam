@@ -134,7 +134,13 @@ def parser_ligne(ligne, profondeur_min=20):
 
 
 class FluxPositions(IterableDataset):
-    """Position par position, encodées à la volée, sans tout charger en mémoire."""
+    """Position par position, encodées à la volée, sans tout charger en mémoire.
+
+    Avec plusieurs workers (DataLoader num_workers > 0) : chaque worker ouvre son propre
+    flux réseau (le téléchargement + décompression + parsing JSON était le vrai goulot
+    d'étranglement, pas l'encodage) et ne garde qu'une position sur `num_workers`,
+    de façon à couvrir le flux sans le dupliquer ni rien sauter.
+    """
 
     def __init__(self, source_lignes, n_max, profondeur_min=20):
         self.source_lignes = source_lignes  # fonction sans argument -> générateur de lignes
@@ -142,10 +148,17 @@ class FluxPositions(IterableDataset):
         self.profondeur_min = profondeur_min
 
     def __iter__(self):
-        n = 0
+        info = torch.utils.data.get_worker_info()
+        id_worker, nb_workers = (0, 1) if info is None else (info.id, info.num_workers)
+        n_max_worker = self.n_max // nb_workers + (1 if id_worker < self.n_max % nb_workers else 0)
+        n_lu, n_garde = 0, 0
         for ligne in self.source_lignes():
-            if n >= self.n_max:
+            if n_garde >= n_max_worker:
                 return
+            if n_lu % nb_workers != id_worker:
+                n_lu += 1
+                continue
+            n_lu += 1
             r = parser_ligne(ligne, self.profondeur_min)
             if r is None:
                 continue
@@ -154,7 +167,7 @@ class FluxPositions(IterableDataset):
                 yield exemple(fen, cp)
             except Exception:
                 continue  # FEN illisible ou position invalide : on ignore, on n'arrête pas tout
-            n += 1
+            n_garde += 1
 
 
 # -- sauvegarde / reprise ---------------------------------------------------------------

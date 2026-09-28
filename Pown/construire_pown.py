@@ -106,11 +106,13 @@ import commun_pown as pown
 
 DOSSIER_DEPART = None       # ex : f"{SORTIE}/pown.pt" pour reprendre un entraînement précédent
 NOM_SORTIE = "pown"
-TIME_MIN = 330              # 5h30 ; s'arrête proprement avant, sauvegarde faite régulièrement
+TIME_MIN = 280              # s'arrête proprement avant, sauvegarde faite régulièrement
 N_POS = 100_000_000         # positions visées par passage (le temps peut couper avant)
 EPOQUES = 3                 # nombre de passages sur le flux (si le temps le permet)
 PROFONDEUR_MIN = 20         # comme PAWN : on ignore les évaluations Stockfish trop peu profondes
 TAILLE_LOT = 16384
+NB_WORKERS = 2               # le vrai frein était le téléchargement + parsing en un seul processus,
+                              # pas l'encodage : plusieurs workers en parallèle règlent ça
 LR = 1e-3
 SAUVEGARDE_SEC = 600        # point de contrôle toutes les 10 min
 SEED = 42
@@ -150,11 +152,13 @@ for epoque in range(EPOQUES):
         break
     print(f"--- passage {epoque + 1}/{EPOQUES} ---")
     flux = pown.FluxPositions(pown.lignes_lichess, n_max=N_POS, profondeur_min=PROFONDEUR_MIN)
-    dl = DataLoader(flux, batch_size=TAILLE_LOT, collate_fn=pown.rassembler)
+    dl = DataLoader(flux, batch_size=TAILLE_LOT, collate_fn=pown.rassembler,
+                     num_workers=NB_WORKERS, pin_memory=(DEVICE == "cuda"), prefetch_factor=4 if NB_WORKERS else None)
     for i, (idx_n, dec_n, idx_e, dec_e, cibles) in enumerate(dl):
-        idx_n, dec_n = idx_n.to(DEVICE), dec_n.to(DEVICE)
-        idx_e, dec_e = idx_e.to(DEVICE), dec_e.to(DEVICE)
-        cibles = cibles.to(DEVICE)
+        non_bloquant = DEVICE == "cuda"
+        idx_n, dec_n = idx_n.to(DEVICE, non_blocking=non_bloquant), dec_n.to(DEVICE, non_blocking=non_bloquant)
+        idx_e, dec_e = idx_e.to(DEVICE, non_blocking=non_bloquant), dec_e.to(DEVICE, non_blocking=non_bloquant)
+        cibles = cibles.to(DEVICE, non_blocking=non_bloquant)
 
         opt.zero_grad()
         sortie = modele(idx_n, dec_n, idx_e, dec_e)
