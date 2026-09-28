@@ -51,6 +51,8 @@ def features(board, couleur):
 
 def exemple(fen, cp):
     """(idx camp au trait, idx camp adverse, cible sigmoid(cp/400)) — cp du point de vue du trait."""
+    if len(fen.split(" ")) < 6:
+        fen += " 0 1"  # le dump Lichess tronque le FEN aux 4 premiers champs
     board = chess.Board(fen)
     stm = board.turn
     cible = 1.0 / (1.0 + math.exp(-max(-3000, min(3000, cp)) / 400))
