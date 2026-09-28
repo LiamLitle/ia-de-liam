@@ -111,8 +111,9 @@ N_POS = 100_000_000         # positions visées par passage (le temps peut coupe
 EPOQUES = 3                 # nombre de passages sur le flux (si le temps le permet)
 PROFONDEUR_MIN = 20         # comme PAWN : on ignore les évaluations Stockfish trop peu profondes
 TAILLE_LOT = 16384
-NB_WORKERS = 2               # le vrai frein était le téléchargement + parsing en un seul processus,
-                              # pas l'encodage : plusieurs workers en parallèle règlent ça
+NB_WORKERS = 0                # testé : plusieurs workers retéléchargent chacun tout le fichier
+                               # depuis le début (le vrai frein semble être la bande passante réseau,
+                               # peut-être bridée côté Lichess) → plusieurs flux = plus lent, pas plus rapide
 LR = 1e-3
 SAUVEGARDE_SEC = 600        # point de contrôle toutes les 10 min
 SEED = 42
@@ -153,7 +154,7 @@ for epoque in range(EPOQUES):
     print(f"--- passage {epoque + 1}/{EPOQUES} ---")
     flux = pown.FluxPositions(pown.lignes_lichess, n_max=N_POS, profondeur_min=PROFONDEUR_MIN)
     dl = DataLoader(flux, batch_size=TAILLE_LOT, collate_fn=pown.rassembler,
-                     num_workers=NB_WORKERS, pin_memory=(DEVICE == "cuda"), prefetch_factor=4 if NB_WORKERS else None)
+                     num_workers=NB_WORKERS, pin_memory=(DEVICE == "cuda"), prefetch_factor=(4 if NB_WORKERS else None))
     for i, (idx_n, dec_n, idx_e, dec_e, cibles) in enumerate(dl):
         non_bloquant = DEVICE == "cuda"
         idx_n, dec_n = idx_n.to(DEVICE, non_blocking=non_bloquant), dec_n.to(DEVICE, non_blocking=non_bloquant)
