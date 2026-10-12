@@ -65,7 +65,7 @@ Données : dump officiel Lichess (FEN + évaluations Stockfish), en streaming.
 - Points de contrôle réguliers, arrêt propre avant la limite.
 """),
     ("code", r"""
-!pip install -q chess zstandard
+!pip install -q chess zstandard onnx onnxruntime
 """),
     ("code", r"""
 import os, glob
@@ -184,6 +184,39 @@ print("blancs avec une Dame de plus :",
       round(modele.eval_cp("rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"), 1), "cp (attendu : très positif)")
 print("blancs sans leur Dame :",
       round(modele.eval_cp("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR w KQkq - 0 1"), 1), "cp (attendu : très négatif)")
+"""),
+    ("md", r"""
+## Export : `.pt` et `.onnx`
+"""),
+    ("code", r"""
+import copy, numpy as np
+from IPython.display import FileLink, display
+
+m = copy.deepcopy(modele).to("cpu").eval()
+b = chess.Board()
+exemple_in = (torch.tensor(pown.features(b, True)), torch.tensor([0]),
+              torch.tensor(pown.features(b, False)), torch.tensor([0]))
+noms_in = ["idx_nous", "dec_nous", "idx_eux", "dec_eux"]
+ONNX = f"{SORTIE}/{NOM_SORTIE}.onnx"
+axes = {"idx_nous": {0: "n"}, "dec_nous": {0: "lot"}, "idx_eux": {0: "e"}, "dec_eux": {0: "lot"}, "logit": {0: "lot"}}
+try:
+    torch.onnx.export(m, exemple_in, ONNX, input_names=noms_in, output_names=["logit"],
+                      dynamic_axes=axes, opset_version=17, dynamo=False)
+except TypeError:  # vieux PyTorch sans l'option dynamo
+    torch.onnx.export(m, exemple_in, ONNX, input_names=noms_in, output_names=["logit"],
+                      dynamic_axes=axes, opset_version=17)
+
+# vérification : ONNX doit donner la même chose que PyTorch
+import onnxruntime as ort
+sess = ort.InferenceSession(ONNX)
+sortie_onnx = sess.run(None, {k: v.numpy() for k, v in zip(noms_in, exemple_in)})[0]
+print("PyTorch :", m(*exemple_in).item(), "| ONNX :", float(sortie_onnx[0]))
+assert abs(float(sortie_onnx[0]) - m(*exemple_in).item()) < 1e-4, "ONNX différent de PyTorch !"
+
+print("fichiers prêts (aussi dans l'onglet Output après Save & Run All) :")
+for f in (CHEMIN, ONNX):
+    print(f, round(os.path.getsize(f) / 1e6, 1), "Mo")
+    display(FileLink(os.path.relpath(f, "/kaggle/working")))
 """),
     ("md", r"""
 ### Et après ?
