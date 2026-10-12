@@ -95,7 +95,7 @@ DOSSIER_DEPART = anciens[-1] if anciens else None
 print("reprise depuis :", DOSSIER_DEPART)
 
 NOM_SORTIE = "pown"
-TIME_MIN = 290              # 4h50 — s'arrête proprement avant, avec sauvegarde
+TIME_MIN = 200              # 3h20 — marge sous ton max de 3h30, arrêt propre avec sauvegarde
 N_POS = 400_000_000         # plafond de positions (c'est le temps qui coupe en pratique)
 PROFONDEUR_MIN = 20
 TAILLE_LOT = 16384
