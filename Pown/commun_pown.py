@@ -7,9 +7,12 @@ import io
 import json
 import math
 import os
+import queue
+import threading
 import time
 
 import chess
+import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import IterableDataset
@@ -168,6 +171,81 @@ class FluxPositions(IterableDataset):
             except Exception:
                 continue  # FEN illisible ou position invalide : on ignore, on n'arrête pas tout
             n_garde += 1
+
+
+# -- flux multi-processus : un seul téléchargement, l'encodage réparti sur tous les cœurs ------
+
+def encoder_lignes(args):
+    """Travail d'un processus : lignes JSON -> un lot déjà assemblé (tableaux numpy), ou None."""
+    lignes, profondeur_min = args
+    idx_n, dec_n, idx_e, dec_e, cibles = [], [], [], [], []
+    pos_n = pos_e = 0
+    for ligne in lignes:
+        r = parser_ligne(ligne, profondeur_min)
+        if r is None:
+            continue
+        try:
+            n, e, c = exemple(*r)
+        except Exception:
+            continue
+        dec_n.append(pos_n); pos_n += len(n); idx_n += n
+        dec_e.append(pos_e); pos_e += len(e); idx_e += e
+        cibles.append(c)
+    if not cibles:
+        return None
+    return (np.array(idx_n, dtype=np.int64), np.array(dec_n, dtype=np.int64),
+            np.array(idx_e, dtype=np.int64), np.array(dec_e, dtype=np.int64),
+            np.array(cibles, dtype=np.float32))
+
+
+def lots_paralleles(source_lignes, n_max, profondeur_min=20, taille_chunk=16384, nb_proc=None):
+    """Génère des lots (tenseurs torch). Le fil de lecture télécharge/décompresse UNE fois le flux,
+    des processus en parallèle font le JSON + l'encodage, le tout en avance sur l'entraînement."""
+    import multiprocessing as mp
+    nb_proc = nb_proc or max(1, (os.cpu_count() or 2) - 1)
+    pool = mp.get_context("fork").Pool(nb_proc)
+    file = queue.Queue(maxsize=nb_proc * 3)  # borne la mémoire : la lecture ne s'emballe pas
+    arret = threading.Event()
+
+    def lecteur():
+        try:
+            chunk = []
+            for ligne in source_lignes():
+                if arret.is_set():
+                    break
+                chunk.append(ligne)
+                if len(chunk) >= taille_chunk:
+                    file.put(pool.apply_async(encoder_lignes, ((chunk, profondeur_min),)))
+                    chunk = []
+            if chunk and not arret.is_set():
+                file.put(pool.apply_async(encoder_lignes, ((chunk, profondeur_min),)))
+        except Exception as exc:  # coupure réseau, etc. : on le fait remonter côté entraînement
+            file.put(exc)
+        finally:
+            file.put(None)
+
+    threading.Thread(target=lecteur, daemon=True).start()
+    n = 0
+    try:
+        while n < n_max:
+            item = file.get()
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+            r = item.get()
+            if r is None:
+                continue
+            n += len(r[4])
+            yield tuple(torch.from_numpy(a) for a in r)
+    finally:
+        arret.set()
+        try:
+            while True:
+                file.get_nowait()
+        except queue.Empty:
+            pass
+        pool.terminate()
 
 
 # -- sauvegarde / reprise ---------------------------------------------------------------

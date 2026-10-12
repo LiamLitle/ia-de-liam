@@ -38,3 +38,8 @@ qu'il soit autonome. Après une modification :
 ```bash
 python Pown/construire_pown.py
 ```
+
+## Version Kaggle (actuelle)
+`pown_train.ipynb` est maintenant prévu pour **Kaggle** : GPU T4 + Internet ON, puis *Save & Run All*.
+Encodage réparti sur tous les cœurs (`lots_paralleles` dans `commun_pown.py`), LR cosinus selon le temps,
+reprise automatique si l'Output d'un ancien run est ajouté en Input.

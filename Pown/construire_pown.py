@@ -43,174 +43,153 @@ with open(os.path.join(ICI, "commun_pown.py"), encoding="utf-8") as f:
     COMMUN = f.read()
 
 NB = [
-    ("md", r'''
-# 🧠♟️ P.O.W.N. — Pawn Optimized With NNUE
+    ("md", r"""
+# 🧠♟️ P.O.W.N. — Pawn Optimized With NNUE  (version Kaggle)
 
-Un nouveau réseau d'évaluation, dans l'esprit du NNUE de Stockfish : **HalfKAv2_hm**
-(encodage roi + case + pièce, avec l'astuce du miroir gauche-droite), pensé pour être
-**beaucoup plus rapide** que PAWN/SPAWN/PWN une fois porté en C++ (mise à jour incrémentale
-à chaque coup, au lieu de tout recalculer).
+Réseau d'évaluation façon NNUE : **HalfKAv2_hm** (roi × case × pièce, astuce du miroir),
+22 528 → 256 (×2 perspectives) → 32 → 32 → 1, soit **≈ 5,78 M de paramètres**.
+Données : dump officiel Lichess (FEN + évaluations Stockfish), en streaming.
 
-| | |
-|---|---|
-| Encodage | HalfKAv2_hm — 22 528 combinaisons possibles (roi × case × pièce) |
-| Réseau | 22 528 → 256 (×2 perspectives) → 32 → 32 → 1 |
-| Paramètres | **≈ 5,78 millions** |
-| Données | dump officiel Lichess (FEN + évaluations Stockfish), en streaming |
-| Objectif | ≈ 100 millions de positions, 2-3 passages |
+## ✅ Avant de lancer sur Kaggle
+1. **Accélérateur : GPU T4** (un seul suffit, le réseau est petit).
+2. **Internet : ON** (panneau de droite → *Session options*).
+3. Pour que ça tourne **sans garder l'onglet ouvert** : bouton **Save Version → Save & Run All (Commit)**.
+   Le modèle sera dans l'onglet *Output* (`pown.pt`).
+4. **Reprendre plus tard** : *Add Input* → ton ancien notebook (son Output) ; le code retrouve
+   tout seul `pown.pt` et continue (optimiseur compris).
 
-⚠️ Cette v1 est volontairement simple (encodage "maison", pas un port exact du NNUE de
-Stockfish) : l'important est que l'entraînement et l'inférence utilisent la même formule,
-pas de coller au bit près à l'implémentation officielle.
-
-## ⚙️ Spécifique à Colab (différent de Kaggle)
-
-- **Monte ton Drive** (cellule ci-dessous) : contrairement à Kaggle, Colab ne garde rien
-  automatiquement. Sans ça, tout est perdu si la session se déconnecte.
-- **Limite de temps** (`TIME_MIN`) : l'entraînement s'arrête proprement à l'heure fixée et
-  sauvegarde un point de contrôle. Pour continuer un autre jour, remets le chemin de ce
-  point de contrôle dans `DOSSIER_DEPART`.
-- Le clé Hugging Face (`HF_TOKEN`, dans les **Secrets** de Colab, icône 🔑) n'est **pas
-  nécessaire** ici : on télécharge directement le fichier public de Lichess, sans compte.
-  Le code la lit quand même si elle existe, pour un futur notebook qui en aurait besoin.
-'''),
-    ("code", r'''
+## ⚡ Ce qui est optimisé par rapport à la version Colab
+- **Un seul téléchargement**, mais le JSON + l'encodage sont répartis sur **tous les cœurs CPU**,
+  en avance sur le GPU (avant : tout se faisait l'un après l'autre sur un seul cœur).
+- **Taux d'apprentissage décroissant** (cosinus) selon le temps imparti : le modèle finit bien « affiné ».
+- Points de contrôle réguliers, arrêt propre avant la limite.
+"""),
+    ("code", r"""
 !pip install -q chess zstandard
-'''),
-    ("code", r'''
-from google.colab import drive
-drive.mount("/content/drive")
-import os
-SORTIE = "/content/drive/MyDrive/pown"
+"""),
+    ("code", r"""
+import os, glob
+SORTIE = "/kaggle/working"
 os.makedirs(SORTIE, exist_ok=True)
-print("les points de contrôle seront sauvegardés dans :", SORTIE)
-'''),
-    ("code", r'''
-import os
+print("CPU :", os.cpu_count(), "cœurs")
+import requests
 try:
-    from google.colab import userdata
-    os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
-    print("HF_TOKEN chargé (pas indispensable pour ce notebook)")
-except Exception:
-    print("pas de HF_TOKEN configuré — sans importance, on ne télécharge rien depuis Hugging Face ici")
-'''),
+    r = requests.head("https://database.lichess.org/lichess_db_eval.jsonl.zst", timeout=20)
+    print("accès à Lichess :", r.status_code, "| taille :", round(int(r.headers.get("content-length", 0)) / 1e9, 1), "Go")
+except Exception as e:
+    print("❌ pas d'accès Internet — active-le dans Session options :", e)
+"""),
     ("code", "%%writefile commun_pown.py\n" + COMMUN),
-    ("md", r'''
+    ("md", r"""
 ## Réglages
-'''),
-    ("code", r'''
-import sys, time
+"""),
+    ("code", r"""
+import sys, time, math
 sys.path.insert(0, os.getcwd())
 import torch
 import commun_pown as pown
 
-DOSSIER_DEPART = None       # ex : f"{SORTIE}/pown.pt" pour reprendre un entraînement précédent
+# Reprise : si un ancien pown.pt est ajouté en Input, on le retrouve tout seul.
+anciens = sorted(glob.glob("/kaggle/input/**/pown.pt", recursive=True))
+DOSSIER_DEPART = anciens[-1] if anciens else None
+print("reprise depuis :", DOSSIER_DEPART)
+
 NOM_SORTIE = "pown"
-TIME_MIN = 280              # s'arrête proprement avant, sauvegarde faite régulièrement
-N_POS = 100_000_000         # positions visées par passage (le temps peut couper avant)
-EPOQUES = 3                 # nombre de passages sur le flux (si le temps le permet)
-PROFONDEUR_MIN = 20         # comme PAWN : on ignore les évaluations Stockfish trop peu profondes
+TIME_MIN = 290              # 4h50 — s'arrête proprement avant, avec sauvegarde
+N_POS = 400_000_000         # plafond de positions (c'est le temps qui coupe en pratique)
+PROFONDEUR_MIN = 20
 TAILLE_LOT = 16384
-NB_WORKERS = 0                # testé : plusieurs workers retéléchargent chacun tout le fichier
-                               # depuis le début (le vrai frein semble être la bande passante réseau,
-                               # peut-être bridée côté Lichess) → plusieurs flux = plus lent, pas plus rapide
-LR = 1e-3
-SAUVEGARDE_SEC = 600        # point de contrôle toutes les 10 min
+NB_PROC = max(1, (os.cpu_count() or 2) - 1)   # processus d'encodage
+LR = 1e-3 if DOSSIER_DEPART is None else 4e-4  # en reprise : on repart plus bas
+LR_FIN = 0.03               # le LR descend jusqu'à LR * LR_FIN
+SAUVEGARDE_SEC = 600
 SEED = 42
 torch.manual_seed(SEED)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print("device :", DEVICE)
+print("device :", DEVICE, "| processus d'encodage :", NB_PROC)
 if DEVICE == "cpu":
-    print("⚠️ pas de GPU : Runtime → Modifier le type d'exécution → GPU (T4)")
-'''),
-    ("md", r'''
-## Modèle (reprise si `DOSSIER_DEPART` est renseigné)
-'''),
-    ("code", r'''
+    print("⚠️ pas de GPU : active un accélérateur (T4)")
+"""),
+    ("md", r"""
+## Modèle
+"""),
+    ("code", r"""
 modele = pown.ReseauPOWN().to(DEVICE)
 opt = torch.optim.AdamW(modele.parameters(), lr=LR)
 n_vues, secondes_avant = 0, 0.0
-if DOSSIER_DEPART and os.path.exists(DOSSIER_DEPART):
+if DOSSIER_DEPART:
     n_vues, secondes_avant = pown.charger(DOSSIER_DEPART, modele, opt, DEVICE)
+    for g in opt.param_groups:
+        g["lr"] = LR
     print(f"reprise : {n_vues:,} positions déjà vues, {secondes_avant/60:.0f} min déjà passées")
 print("paramètres :", sum(t.numel() for t in modele.parameters()))
-'''),
-    ("md", r'''
-## Entraînement (flux Lichess, coupure au temps imparti)
-'''),
-    ("code", r'''
-from torch.utils.data import DataLoader
-
+"""),
+    ("md", r"""
+## Entraînement
+Les lignes de log donnent : positions vues, perte, vitesse, minutes écoulées, taux d'apprentissage.
+Si la vitesse reste basse, c'est la bande passante vers Lichess qui limite (pas le calcul).
+"""),
+    ("code", r"""
 CHEMIN = f"{SORTIE}/{NOM_SORTIE}.pt"
 perte_fn = torch.nn.BCEWithLogitsLoss()
+budget = TIME_MIN * 60
 t0 = time.time()
 derniere_sauvegarde = t0
-pertes = []
+pertes, n_session = [], 0
 
-for epoque in range(EPOQUES):
-    if time.time() - t0 > TIME_MIN * 60:
+for i, (idx_n, dec_n, idx_e, dec_e, cibles) in enumerate(
+        pown.lots_paralleles(pown.lignes_lichess, N_POS, PROFONDEUR_MIN, TAILLE_LOT, NB_PROC)):
+    ecoule = time.time() - t0
+    if ecoule > budget:
+        print("budget temps atteint, on s'arrête proprement")
         break
-    print(f"--- passage {epoque + 1}/{EPOQUES} ---")
-    flux = pown.FluxPositions(pown.lignes_lichess, n_max=N_POS, profondeur_min=PROFONDEUR_MIN)
-    dl = DataLoader(flux, batch_size=TAILLE_LOT, collate_fn=pown.rassembler,
-                     num_workers=NB_WORKERS, pin_memory=(DEVICE == "cuda"), prefetch_factor=(4 if NB_WORKERS else None))
-    for i, (idx_n, dec_n, idx_e, dec_e, cibles) in enumerate(dl):
-        non_bloquant = DEVICE == "cuda"
-        idx_n, dec_n = idx_n.to(DEVICE, non_blocking=non_bloquant), dec_n.to(DEVICE, non_blocking=non_bloquant)
-        idx_e, dec_e = idx_e.to(DEVICE, non_blocking=non_bloquant), dec_e.to(DEVICE, non_blocking=non_bloquant)
-        cibles = cibles.to(DEVICE, non_blocking=non_bloquant)
+    lr = LR * (LR_FIN + (1 - LR_FIN) * 0.5 * (1 + math.cos(math.pi * ecoule / budget)))
+    for g in opt.param_groups:
+        g["lr"] = lr
 
-        opt.zero_grad()
-        sortie = modele(idx_n, dec_n, idx_e, dec_e)
-        perte = perte_fn(sortie, cibles)
-        perte.backward()
-        opt.step()
+    idx_n, dec_n = idx_n.to(DEVICE, non_blocking=True), dec_n.to(DEVICE, non_blocking=True)
+    idx_e, dec_e = idx_e.to(DEVICE, non_blocking=True), dec_e.to(DEVICE, non_blocking=True)
+    cibles = cibles.to(DEVICE, non_blocking=True)
 
-        n_vues += cibles.shape[0]
-        pertes.append(perte.item())
+    opt.zero_grad()
+    perte = perte_fn(modele(idx_n, dec_n, idx_e, dec_e), cibles)
+    perte.backward()
+    opt.step()
 
-        if i % 200 == 0:
-            vitesse = n_vues / (time.time() - t0 + 1e-9)
-            print(f"{n_vues:>12,} positions | perte {sum(pertes[-200:]) / len(pertes[-200:]):.4f} "
-                  f"| {vitesse:,.0f} pos/s | {(time.time() - t0) / 60:.0f} min")
+    n_vues += cibles.shape[0]
+    n_session += cibles.shape[0]
+    pertes.append(perte.item())
 
-        if time.time() - derniere_sauvegarde > SAUVEGARDE_SEC:
-            pown.sauvegarder(CHEMIN, modele, opt, n_vues, secondes_avant + time.time() - t0)
-            derniere_sauvegarde = time.time()
+    if i % 50 == 0:
+        print(f"{n_vues:>12,} positions | perte {sum(pertes[-50:]) / len(pertes[-50:]):.4f} "
+              f"| {n_session / (ecoule + 1e-9):,.0f} pos/s | {ecoule / 60:.0f} min | lr {lr:.1e}")
 
-        if time.time() - t0 > TIME_MIN * 60:
-            print("budget temps atteint, on s'arrête proprement")
-            break
+    if time.time() - derniere_sauvegarde > SAUVEGARDE_SEC:
+        pown.sauvegarder(CHEMIN, modele, opt, n_vues, secondes_avant + time.time() - t0)
+        derniere_sauvegarde = time.time()
 
 pown.sauvegarder(CHEMIN, modele, opt, n_vues, secondes_avant + time.time() - t0)
 print(f"terminé : {n_vues:,} positions vues au total, modèle sauvegardé dans {CHEMIN}")
-'''),
-    ("md", r'''
-## Petit test de cohérence
-'''),
-    ("code", r'''
+"""),
+    ("md", r"""
+## Test de cohérence
+"""),
+    ("code", r"""
 import chess
 
 modele.eval()
 print("position de départ :", round(modele.eval_cp(chess.STARTING_FEN), 1), "cp (attendu : proche de 0)")
-
-# net avantage matériel pour les blancs (une Dame de plus)
 print("blancs avec une Dame de plus :",
-      round(modele.eval_cp("rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"), 1), "cp")
-b_sans_dame_noire = chess.Board("rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
-print("(sans la dame noire, ce devrait être largement positif)")
-modele.train()
-'''),
-    ("md", r'''
+      round(modele.eval_cp("rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"), 1), "cp (attendu : très positif)")
+print("blancs sans leur Dame :",
+      round(modele.eval_cp("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR w KQkq - 0 1"), 1), "cp (attendu : très négatif)")
+"""),
+    ("md", r"""
 ### Et après ?
-- **Pour continuer demain** : remets `DOSSIER_DEPART = f"{SORTIE}/pown.pt"` (le fichier est
-  dans ton Drive, il survit à la session) et relance.
-- **Pour le comparer aux autres modèles** : il faudra un petit pont ONNX ou un chargeur
-  direct dans `commun_echecs.py`, plus une recherche alpha-bêta qui l'utilise — prochaine étape.
-- Cette v1 mesure juste que **l'entraînement tourne et que la perte baisse**. Le vrai jugement
-  viendra des benchmarks (comme pour PAWN, SPAWN, PWN) une fois qu'il pourra jouer.
-'''),
+- **Continuer** : *Add Input* → l'Output de ce notebook, relance (reprise automatique, LR plus bas).
+- **Le comparer aux autres** : il faudra l'export des poids pour le moteur C++ / un chargeur dans `commun_echecs.py`.
+"""),
 ]
 
 if __name__ == "__main__":
