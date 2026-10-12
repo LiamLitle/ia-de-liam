@@ -15,7 +15,7 @@ comme PAWN/SPAWN/PWN).
 
 ## Lancer l'entraînement (Google Colab)
 
-1. Télécharge `pown_train.ipynb` et importe-le sur [colab.research.google.com](https://colab.research.google.com).
+1. Télécharge `pown_kaggle_v2.ipynb` et importe-le sur [colab.research.google.com](https://colab.research.google.com).
 2. **Exécution → Modifier le type d'exécution → GPU (T4)**.
 3. (Optionnel) Dans les **Secrets** de Colab (icône 🔑), ajoute `HF_TOKEN` — pas indispensable
    pour ce notebook, gardé pour un futur besoin.
@@ -40,6 +40,6 @@ python Pown/construire_pown.py
 ```
 
 ## Version Kaggle (actuelle)
-`pown_train.ipynb` est maintenant prévu pour **Kaggle** : GPU T4 + Internet ON, puis *Save & Run All*.
+`pown_kaggle_v2.ipynb` est maintenant prévu pour **Kaggle** : GPU T4 + Internet ON, puis *Save & Run All*.
 Encodage réparti sur tous les cœurs (`lots_paralleles` dans `commun_pown.py`), LR cosinus selon le temps,
 reprise automatique si l'Output d'un ancien run est ajouté en Input.

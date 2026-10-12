@@ -226,4 +226,4 @@ for f in (CHEMIN, ONNX):
 ]
 
 if __name__ == "__main__":
-    ecrire("pown_train.ipynb", NB)
+    ecrire("pown_kaggle_v2.ipynb", NB)
