@@ -68,13 +68,17 @@ class ReseauPOWN(nn.Module):
     def __init__(self, f=F, h=256):
         super().__init__()
         self.transformateur = nn.EmbeddingBag(f, h, mode="sum")
+        self.biais = nn.Parameter(torch.full((h,), 0.5))
+        # init petite : ~30 pièces actives s'additionnent, et le clamp(0,1) tue le gradient hors de [0,1]
+        # (avec l'init N(0,1) par défaut, seulement ~9 % des neurones étaient dans la zone active)
+        nn.init.normal_(self.transformateur.weight, 0.0, 0.05)
         self.c1 = nn.Linear(2 * h, 32)
         self.c2 = nn.Linear(32, 32)
         self.sortie = nn.Linear(32, 1)
 
     def forward(self, idx_nous, decal_nous, idx_eux, decal_eux):
-        a = self.transformateur(idx_nous, decal_nous)
-        b = self.transformateur(idx_eux, decal_eux)
+        a = self.transformateur(idx_nous, decal_nous) + self.biais
+        b = self.transformateur(idx_eux, decal_eux) + self.biais
         x = torch.clamp(torch.cat([a, b], dim=1), 0, 1)  # "clipped relu" façon NNUE
         x = torch.clamp(self.c1(x), 0, 1)
         x = torch.clamp(self.c2(x), 0, 1)
