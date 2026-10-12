@@ -44,7 +44,7 @@ with open(os.path.join(ICI, "commun_pown.py"), encoding="utf-8") as f:
 
 NB = [
     ("md", r"""
-# 🧠♟️ P.O.W.N. — Pawn Optimized With NNUE  (version Kaggle)
+# 🧠♟️ P.O.W.N. — Pawn Optimized With NNUE  (version Kaggle **v2**)
 
 Réseau d'évaluation façon NNUE : **HalfKAv2_hm** (roi × case × pièce, astuce du miroir),
 22 528 → 256 (×2 perspectives) → 32 → 32 → 1, soit **≈ 5,78 M de paramètres**.
@@ -87,7 +87,12 @@ except Exception as e:
 import sys, time, math
 sys.path.insert(0, os.getcwd())
 import torch
+sys.modules.pop("commun_pown", None)   # oublie une éventuelle ancienne version restée en mémoire
 import commun_pown as pown
+print("fichier chargé :", pown.__file__)
+assert hasattr(pown.ReseauPOWN(), "biais"), (
+    "❌ ANCIENNE version de commun_pown chargée. Fais Run → Restart session, puis relance tout depuis le début.")
+print("✅ notebook v2 (init corrigée + biais)")
 
 # Reprise : si un ancien pown.pt est ajouté en Input, on le retrouve tout seul.
 anciens = sorted(glob.glob("/kaggle/input/**/pown.pt", recursive=True))
