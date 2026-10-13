@@ -1927,6 +1927,95 @@ for _i, (_genre, _texte) in enumerate(NB7[1:], start=1):
         NB8.append(("code", NB8_VERIF))
 
 
+# =====================================================================================
+# 09 — diagnostic de l'alpha-bêta de P.O.W.N. (vitesse + puzzles), avant le gros match
+# =====================================================================================
+
+NB9_INTRO = r'''
+# 🔬 Diagnostic de l'alpha-bêta de P.O.W.N.
+
+Avant le gros match contre Stockfish (notebook 08), on regarde **comment se comporte la recherche** avec le réseau P.O.W.N. :
+
+1. **Vitesse** : secondes par coup, positions évaluées par coup et par seconde, à profondeur 1, 2, 3, 4 — sur 8 positions
+   (ouverture, milieu de partie, finale). On voit aussi si la profondeur change le coup choisi.
+2. **Puzzles Lichess** (comme le notebook 02, en plus petit : ~300 puzzles, de facile à très difficile) pour **POWN@ab1 / ab2 / ab3**,
+   avec **PWN@ab2** à côté pour comparer à profondeur égale : ça dit si le réseau P.O.W.N. voit mieux que SPAWN avec la même recherche.
+
+## ⚙️ Avant de lancer
+1. Ajoute ton **Dataset `pown-1`** (contenant `pown.onnx`) en **Input**.
+2. **Internet ON**, accélérateur **None** (tout tourne sur CPU).
+3. **Save & Run All (Commit)**.
+
+L'alpha-bêta est celle de PWN (profondeur fixe, quiescence 4, table de transposition, tri des coups par prises et échecs).
+Elle n'a **pas** de null-move, de réductions (LMR) ni de fenêtres d'aspiration : les chiffres de vitesse de ce notebook
+sont donc ceux d'une recherche simple, un point de départ pour décider quoi améliorer.
+'''
+
+NB9_VITESSE = r'''
+POSITIONS = {
+    "départ": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "italienne": "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+    "milieu calme": "r2q1rk1/ppp2ppp/2np1n2/2b1p1B1/2B1P1b1/2NP1N2/PPP2PPP/R2Q1RK1 w - - 0 8",
+    "kiwipete (tactique)": "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+    "finale de tours": "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+    "milieu fermé": "2r2rk1/1p2qppp/p1n1pn2/3p4/3P4/P1NBPN2/1P3PPP/2RQ1RK1 w - - 0 1",
+    "pions + roi": "8/8/4k3/3p4/3P4/4K3/8/8 w - - 0 1",
+    "attaque": "r1b2rk1/pp1nqppp/2p1pn2/3p4/2PP4/2NBPN2/PP3PPP/R2QK2R w KQ - 0 9",
+}
+DEPTHS = [1, 2, 3, 4]
+ev = ce.evaluateur("POWN", gpu=False)
+lignes, choisis = [], {}
+for d in DEPTHS:
+    tt, ne, choisis[d] = 0.0, 0, {}
+    for nom, fen in POSITIONS.items():
+        ev.cache.clear()
+        n0 = ev.nb_evals
+        t = time.perf_counter()
+        mv = ce.choisir_alphabeta(chess.Board(fen), ev, d)
+        tt += time.perf_counter() - t
+        ne += ev.nb_evals - n0
+        choisis[d][nom] = mv.uci()
+    lignes.append({"profondeur": d, "s / coup": tt / len(POSITIONS), "positions évaluées / coup": ne / len(POSITIONS),
+                   "évaluations / s": ne / tt})
+    print(f"ab{d} : {tt / len(POSITIONS):.2f} s/coup, {ne / len(POSITIONS):,.0f} positions évaluées/coup, {ne / tt:,.0f} évaluations/s")
+    if tt / len(POSITIONS) > 90:
+        print("trop lent, on s'arrête là"); break
+vitesse = pd.DataFrame(lignes).set_index("profondeur")
+prof_max = max(choisis)
+vitesse["même coup que la profondeur max (%)"] = [100 * np.mean([choisis[d][n] == choisis[prof_max][n] for n in POSITIONS]) for d in vitesse.index]
+vitesse.to_csv(f"{SORTIE}/pown_ab_vitesse.csv")
+vitesse.round(2)
+'''
+
+NB9_VITESSE_GRAPHE = r'''
+fig, ax = plt.subplots(1, 2, figsize=(12, 4))
+vitesse["s / coup"].plot.bar(ax=ax[0], color="#58a", logy=True, rot=0, title="secondes par coup (échelle log)")
+vitesse["évaluations / s"].plot.bar(ax=ax[1], color="#a85", rot=0, title="évaluations par seconde")
+plt.tight_layout(); plt.savefig(f"{SORTIE}/pown_ab_vitesse.png", dpi=120); plt.show()
+'''
+
+NB9_PIED = r'''
+### Comment lire les résultats
+- **Vitesse** : le temps par coup est multiplié par ~5-10 à chaque profondeur en plus. Si ab3 prend moins d'une seconde, ab4 et ab5 sont jouables.
+- **Même coup que la profondeur max** : s'il est bas pour ab1/ab2, la profondeur change beaucoup le jeu (la recherche apporte beaucoup).
+- **Puzzles** : compare **POWN@ab2 à PWN@ab2** (même recherche, réseau différent) pour juger le réseau, et **POWN@ab1 → ab2 → ab3** pour juger l'apport de la profondeur.
+- Chiffres à ne pas sur-interpréter : ~300 puzzles donnent une marge d'erreur de plusieurs dizaines d'Elo puzzle.
+'''
+
+NB9 = [("md", NB9_INTRO), ("code", INSTALL_ECHECS), ("code", MODULE_ECHECS), ("code", IMPORT_ECHECS),
+       ("code", NB8_VERIF), ("code", "SORTIE = \"/kaggle/working\" if os.path.isdir(\"/kaggle/working\") else \".\"\n" + NB9_VITESSE),
+       ("code", NB9_VITESSE_GRAPHE)]
+for _genre, _texte in NB2[4:-1]:
+    if _genre == "code" and _texte.lstrip().startswith("# ---- réglages ----"):
+        _texte = _re.sub(r"JOUEURS = \[.*?\]\n", 'JOUEURS = ["POWN@ab1", "POWN@ab2", "POWN@ab3", "PWN@ab2"]\n', _texte, flags=_re.S)
+        _texte = _texte.replace("PAR_TRANCHE = 100", "PAR_TRANCHE = 25").replace("LENTS = {\"PWN@ab3\"}", "LENTS = set()")
+        _texte = _texte.replace("GPU = True", "GPU = False")
+    if _genre == "code" and "PAIRES = [" in _texte:
+        _texte = _re.sub(r"PAIRES = \[.*?\]\n", 'PAIRES = [("POWN@ab1", "POWN@ab2"), ("POWN@ab2", "POWN@ab3"), ("PWN@ab2", "POWN@ab2")]\n', _texte, flags=_re.S)
+    NB9.append((_genre, _texte))
+NB9.append(("md", NB9_PIED))
+
+
 if __name__ == "__main__":
     ecrire("01_echecs_precision_evaluation.ipynb", NB1)
     ecrire("02_echecs_puzzles_lichess.ipynb", NB2)
@@ -1936,3 +2025,4 @@ if __name__ == "__main__":
     ecrire("06_finemind2_questions_reponses.ipynb", NB6)
     ecrire("07_pwn3_vs_stockfish.ipynb", NB7)
     ecrire("08_pown_vs_stockfish.ipynb", NB8)
+    ecrire("09_pown_diagnostic_alphabeta.ipynb", NB9)
