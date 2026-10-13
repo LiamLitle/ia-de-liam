@@ -2038,6 +2038,122 @@ for _genre, _texte in NB2[4:-1]:
 NB9.append(("md", NB9_PIED))
 
 
+# =====================================================================================
+# 10 — Solution (S) : le moteur C++ avec P.O.W.N. contre Stockfish
+# =====================================================================================
+
+SRC_S = os.path.join(ICI, "..", "Solution")
+_FICHIERS_S = ["src/types.h", "src/bitboard.h", "src/bitboard.cpp", "src/position.h", "src/position.cpp", "src/movegen.h",
+               "src/movegen.cpp", "src/nnue.h", "src/nnue.cpp", "src/tt.h", "src/search.h", "src/search.cpp", "src/main.cpp",
+               "tools/exporter_poids.py"]
+_SOURCES_S = {}
+for _f in _FICHIERS_S:
+    with open(os.path.join(SRC_S, _f), encoding="utf-8") as _fh:
+        _SOURCES_S[os.path.basename(_f)] = _fh.read()
+
+NB10_INTRO = r'''
+# ⚙️♟️ Solution (S) — le moteur C++ avec P.O.W.N. contre Stockfish
+
+**Solution (S)** est le moteur d'échecs complet écrit en **C++** : générateur de coups (vérifié contre `python-chess` et les nombres officiels de *perft*),
+réseau **P.O.W.N.** avec mise à jour incrémentale, recherche alpha-bêta améliorée (approfondissement itératif, table de transposition, coup nul,
+réductions, élagages, quiescence avec SEE), gestion du temps, protocole UCI.
+
+Ce notebook :
+1. **compile** le moteur (les sources sont dans la cellule suivante, rien à télécharger) ;
+2. **convertit** `pown.onnx` en `pown.bin` (poids pour le C++) ;
+3. **teste** : règles (perft), vitesse, une recherche ;
+4. fait jouer **POWN@S1** (1 seconde par coup) contre Stockfish 17 à plusieurs niveaux, comme les notebooks 07 et 08.
+
+Repères : **PWN@ab3 ≈ 2264 Elo** (notebook 07). ⚠️ L'`UCI_Elo` de Stockfish est calibré contre des moteurs : c'est un ordre de grandeur, pas un Elo FIDE.
+
+## ⚙️ Avant de lancer
+1. Dataset **`pown-1`** (contenant `pown.onnx`) en **Input**.
+2. **Internet ON**, accélérateur **None**, puis **Save & Run All (Commit)**.
+'''
+
+NB10_SOURCES = "import os, json\nSOURCES = json.loads(r'''" + json.dumps(_SOURCES_S) + "''')\n" + r'''
+os.makedirs("solution/src", exist_ok=True)
+os.makedirs("solution/tools", exist_ok=True)
+for nom, texte in SOURCES.items():
+    dossier = "solution/tools" if nom.endswith(".py") else "solution/src"
+    with open(os.path.join(dossier, nom), "w", encoding="utf-8") as f:
+        f.write(texte)
+print(len(SOURCES), "fichiers écrits dans solution/")
+'''
+
+NB10_COMPILE = r'''
+import subprocess
+cpp = [f"solution/src/{n}" for n in SOURCES if n.endswith(".cpp")]
+cmd = ["g++", "-O3", "-march=native", "-std=c++17", "-pthread", "-o", "solution/solution"] + cpp
+t = time.time()
+r = subprocess.run(cmd, capture_output=True, text=True)
+print(r.stderr[-3000:] if r.returncode else f"compilé en {time.time() - t:.0f} s")
+assert r.returncode == 0, "échec de la compilation"
+'''
+
+NB10_POIDS = r'''
+sys.path.insert(0, "solution/tools")
+import exporter_poids as ex
+src = ce.poids("Pown/pown.onnx")
+ex.ecrire_bin(ex.poids_depuis_onnx(src), "solution/pown.bin")
+os.environ["SOLUTION_BIN"] = os.path.abspath("solution/solution")
+os.environ["SOLUTION_POIDS"] = os.path.abspath("solution/pown.bin")
+'''
+
+NB10_TESTS = r'''
+exe, poids = os.environ["SOLUTION_BIN"], os.environ["SOLUTION_POIDS"]
+# 1) règles : nombre de positions atteignables depuis le départ (valeur officielle à profondeur 5 : 4 865 609)
+n = int(subprocess.run([exe, poids, "perft", "5"], capture_output=True, text=True).stdout.split()[-1])
+print("perft(5) =", f"{n:,}", "✅" if n == 4865609 else "❌ ATTENDU 4,865,609")
+assert n == 4865609
+
+# 2) le C++ doit donner la même évaluation que onnxruntime (même réseau)
+fens = [chess.STARTING_FEN, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 b - - 0 1"]
+proc = subprocess.Popen([exe, poids], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+def interroger(cmd, attendre="eval"):
+    proc.stdin.write(cmd + "\n"); proc.stdin.flush()
+for f in fens:
+    interroger("position fen " + f); interroger("eval")
+    cpp = int(proc.stdout.readline().split()[1])
+    b = chess.Board(f)
+    sess = ort.InferenceSession(src, providers=["CPUExecutionProvider"])
+    nn, ee = pown_features(b, b.turn), pown_features(b, not b.turn)
+    onnx_cp = 400 * float(sess.run(None, {"idx_nous": np.array(nn, dtype=np.int64), "dec_nous": np.array([0], dtype=np.int64),
+                                          "idx_eux": np.array(ee, dtype=np.int64), "dec_eux": np.array([0], dtype=np.int64)})[0][0])
+    print(f"évaluation  C++ : {cpp:6d} cp | onnxruntime : {onnx_cp:8.1f} cp", "✅" if abs(cpp - onnx_cp) < 2 else "❌")
+    assert abs(cpp - onnx_cp) < 2
+proc.stdin.write("quit\n"); proc.stdin.flush()
+
+# 3) vitesse et profondeur sur des positions réelles
+print(subprocess.run([exe, poids, "bench"], capture_output=True, text=True).stdout)
+'''
+
+NB10_PARTIE = r'''
+# un coup de démonstration : profondeur et vitesse de S à 1 s par coup
+eng = chess.engine.SimpleEngine.popen_uci([os.environ["SOLUTION_BIN"], os.environ["SOLUTION_POIDS"]])
+for fen in ["r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", chess.STARTING_FEN]:
+    info = eng.analyse(chess.Board(fen), chess.engine.Limit(time=1))
+    print(f"profondeur {info.get('depth')} | {info.get('nodes', 0):,} noeuds | {info.get('nps', 0):,} noeuds/s | score {info.get('score')} | coup {info['pv'][0] if info.get('pv') else '?'}")
+eng.quit()
+'''
+
+NB10 = [("md", NB10_INTRO)]
+for _i, (_genre, _texte) in enumerate(NB7[1:], start=1):
+    _t = _adapter_pown(_texte) if _genre == "code" or _i == len(NB7) - 1 else _texte
+    if _genre == "code":
+        _t = _t.replace('JOUEUR = "POWN@t5"    # recherche équilibrée : 5 s par coup, aussi profond que le temps le permet',
+                        'JOUEUR = "POWN@S1"    # moteur C++ Solution (S), 1 s par coup')
+        _t = _t.replace('JOUEUR = "POWN@ab3"', 'JOUEUR = "POWN@S1"    # moteur C++ Solution (S), 1 s par coup')
+        _t = _t.replace("NIVEAUX = [1500, 1800, 2100, 2400, 2700]", "NIVEAUX = [1500, 1800, 2100, 2400, 2700, 3000]")
+        _t = _t.replace("pown_", "solution_")
+    NB10.append((_genre, _t))
+    if _i == 3:   # après l'import : vérifier pown.onnx, compiler, tester
+        NB10 += [("code", NB8_VERIF), ("code", "!pip install -q onnx"), ("code", NB10_SOURCES), ("code", NB10_COMPILE),
+                 ("code", NB10_POIDS), ("code", "from commun_echecs import features_pown as pown_features\n" + NB10_TESTS),
+                 ("code", NB10_PARTIE)]
+
+
 if __name__ == "__main__":
     ecrire("01_echecs_precision_evaluation.ipynb", NB1)
     ecrire("02_echecs_puzzles_lichess.ipynb", NB2)
@@ -2048,3 +2164,4 @@ if __name__ == "__main__":
     ecrire("07_pwn3_vs_stockfish.ipynb", NB7, gpu=False)
     ecrire("08_pown_vs_stockfish.ipynb", NB8, gpu=False)
     ecrire("09_pown_diagnostic_alphabeta.ipynb", NB9, gpu=False)
+    ecrire("10_solution_cpp_vs_stockfish.ipynb", NB10, gpu=False)

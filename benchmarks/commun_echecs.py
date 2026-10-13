@@ -540,6 +540,8 @@ def decoder(joueur):
         return nom, "arbre", int(rech[5:])
     if rech.startswith("ab"):
         return nom, "ab", int(rech[2:])
+    if rech.startswith("S"):          # ex. "POWN@S1" : moteur C++ Solution (S), 1 s par coup
+        return nom, "solution", float(rech[1:])
     if rech.startswith("e") and rech[1:].isdigit():   # ex. "POWN@e3" : profondeur fixe 3, recherche améliorée
         return nom, "econome", int(rech[1:])
     if rech.startswith("t"):          # ex. "POWN@t5" : recherche équilibrée, 5 secondes par coup
@@ -569,6 +571,7 @@ def configurer(gpu=True, threads=0, sf_chemin=None, sf_temps=0.1):
     GPU, THREADS, SF_CHEMIN, SF_TEMPS = gpu, threads, sf_chemin, sf_temps
     _EVALS.clear()
     _SF.clear()
+    _S.clear()
 
 
 def stockfish(cfg):
@@ -585,10 +588,28 @@ def stockfish(cfg):
     return _SF[cfg]
 
 
+_S = {}
+
+
+def solution(secondes=1.0):
+    """moteur C++ Solution (S) piloté en UCI ; chemins donnés par les variables d'environnement
+    SOLUTION_BIN (exécutable) et SOLUTION_POIDS (pown.bin), lues à chaque appel (les processus fils les héritent)"""
+    cle = (os.environ["SOLUTION_BIN"], os.environ["SOLUTION_POIDS"])
+    if cle not in _S:
+        e = chess.engine.SimpleEngine.popen_uci([cle[0], cle[1]])
+        e.configure({"Hash": 64})
+        _S[cle] = e
+    return _S[cle]
+
+
 def fermer_stockfish():
-    for e in _SF.values():
-        e.quit()
+    for e in list(_SF.values()) + list(_S.values()):
+        try:
+            e.quit()
+        except Exception:
+            pass
     _SF.clear()
+    _S.clear()
 
 
 def coup(joueur, board):
@@ -598,6 +619,8 @@ def coup(joueur, board):
     b = board.copy(stack=True)
     if rech == "arbre":
         return choisir_arbre(b, evaluateur(nom), depth)
+    if rech == "solution":
+        return solution(depth).play(b, chess.engine.Limit(time=depth)).move
     if rech == "econome":
         return choisir_temps(b, evaluateur(nom, gpu=False), 1e9, prof_max=depth)
     if rech == "temps":
