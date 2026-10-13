@@ -1964,7 +1964,7 @@ POSITIONS = {
     "pions + roi": "8/8/4k3/3p4/3P4/4K3/8/8 w - - 0 1",
     "attaque": "r1b2rk1/pp1nqppp/2p1pn2/3p4/2PP4/2NBPN2/PP3PPP/R2QK2R w KQ - 0 9",
 }
-DEPTHS = [1, 2, 3, 4]   # on s'arrête dès qu'une profondeur dépasse LIMITE_S par coup
+DEPTHS = [1, 2]   # ab3 déjà mesuré : ~82 s par coup, 206 000 positions évaluées (trop lent, inutile de le refaire)
 LIMITE_S = 20
 ev = ce.evaluateur("POWN", gpu=False)
 lignes, choisis = [], {}
