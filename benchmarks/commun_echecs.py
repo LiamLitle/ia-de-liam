@@ -32,6 +32,7 @@ RESEAUX = {
     "PAWN_BIG": "PawnBig-V1/pawn_big.onnx",
     "CONTROLE": "PawnBig-controlleur/pawn_big_controle.onnx",
     "SPAWN": "PWN-soluce/pawn_soluce.onnx",
+    "POWN": "Pown/pown.onnx",
 }
 
 
@@ -159,6 +160,66 @@ class Evaluateur:
                 self.cache.clear()
             v = self.cache[fen] = float(self.evals([fen])[0])
         return v
+
+
+# -- P.O.W.N. (NNUE HalfKAv2_hm) : autre encodage d'entrée, même interface -------------
+
+def _bucket_pown(roi, miroir):
+    f = chess.square_file(roi)
+    if miroir:
+        f = 7 - f
+    return chess.square_rank(roi) * 4 + f
+
+
+def features_pown(board, couleur):
+    """doit rester identique à features() de Pown/commun_pown.py (vérifié par test)"""
+    roi = board.king(couleur)
+    miroir = chess.square_file(roi) >= 4
+    b = _bucket_pown(roi, miroir)
+    idx = []
+    for case, piece in board.piece_map().items():
+        if piece.piece_type == chess.KING and piece.color == couleur:
+            continue
+        f, r = chess.square_file(case), chess.square_rank(case)
+        if miroir:
+            f = 7 - f
+        nous = piece.color == couleur
+        t = (piece.piece_type - 1) if nous else 5 + (piece.piece_type - 1)
+        idx.append(b * 704 + (r * 8 + f) * 11 + t)
+    return idx
+
+
+class EvaluateurPOWN(Evaluateur):
+    """P.O.W.N. : ONNX à 4 entrées (index + décalages des deux points de vue) -> logit ; cp = 400 x logit"""
+
+    def __init__(self, nom, gpu=False, threads=0):
+        self.nom = nom
+        self.so = ort.SessionOptions()
+        if threads:
+            self.so.intra_op_num_threads = threads
+            self.so.inter_op_num_threads = 1
+        self.session = ort.InferenceSession(poids(RESEAUX[nom]), self.so, providers=["CPUExecutionProvider"])
+        self.sur_gpu = False
+        self.nb_evals = 0
+        self.cache = {}
+
+    def evals(self, fens, lot=4096):
+        if not fens:
+            return np.zeros(0, dtype=np.float32)
+        res = []
+        for i in range(0, len(fens), lot):
+            idx_n, dec_n, idx_e, dec_e = [], [], [], []
+            for fen in fens[i:i + lot]:
+                b = chess.Board(fen)
+                n, e = features_pown(b, b.turn), features_pown(b, not b.turn)
+                dec_n.append(len(idx_n)); idx_n += n
+                dec_e.append(len(idx_e)); idx_e += e
+            sortie = self.session.run(None, {
+                "idx_nous": np.array(idx_n, dtype=np.int64), "dec_nous": np.array(dec_n, dtype=np.int64),
+                "idx_eux": np.array(idx_e, dtype=np.int64), "dec_eux": np.array(dec_e, dtype=np.int64)})[0]
+            res.append(400.0 * sortie)
+        self.nb_evals += len(fens)
+        return np.concatenate(res)
 
 
 # -- recherche « arbre complet » (PAWN, PAWN big, contrôle, SPAWN) -----------------
@@ -315,7 +376,8 @@ SF_TEMPS = 0.1
 def evaluateur(nom, gpu=None):
     gpu = GPU if gpu is None else gpu
     if (nom, gpu) not in _EVALS:
-        _EVALS[(nom, gpu)] = Evaluateur(nom, gpu=gpu, threads=THREADS)
+        classe = EvaluateurPOWN if nom == "POWN" else Evaluateur
+        _EVALS[(nom, gpu)] = classe(nom, gpu=gpu, threads=THREADS)
     return _EVALS[(nom, gpu)]
 
 
