@@ -350,6 +350,184 @@ def choisir_alphabeta(board, ev, depth, prof_q=4):
     return meilleur_coup
 
 
+# -- recherche « équilibrée » : alpha-bêta améliorée + durée fixée par coup (POWN@t5 = 5 s par coup) ----
+
+class _Temps(Exception):
+    pass
+
+
+class Recherche:
+    """Alpha-bêta avec approfondissement itératif jusqu'à épuisement du temps. Par rapport à choisir_alphabeta :
+    tri des coups (table, captures MVV-LVA, tueurs, historique), quiescence qui écarte les mauvaises captures,
+    extension d'échec, coup nul, réductions (LMR). Le coup rendu est celui de la dernière profondeur terminée."""
+
+    def __init__(self, ev, secondes, prof_max=20, prof_q=4):
+        self.ev, self.secondes, self.prof_max, self.prof_q = ev, secondes, prof_max, prof_q
+        self.tt, self.tueurs, self.histo, self.noeuds = {}, {}, {}, 0
+        self.fin = 0.0
+        self.prof_atteinte = 0
+
+    def _horloge(self):
+        self.noeuds += 1
+        if self.noeuds & 15 == 0 and time.perf_counter() > self.fin:
+            raise _Temps()
+
+    def _cle(self, board, mv, coup_tt, ply):
+        if mv == coup_tt:
+            return 1_000_000
+        if board.is_capture(mv) or mv.promotion:
+            victime = VAL_PIECE[board.piece_type_at(mv.to_square) or chess.PAWN]
+            return 100_000 + victime * 100 - VAL_PIECE[board.piece_type_at(mv.from_square)] + (50 if mv.promotion else 0)
+        if mv in self.tueurs.get(ply, ()):
+            return 90_000
+        return self.histo.get((board.turn, mv.from_square, mv.to_square), 0)
+
+    def quiescence(self, board, alpha, beta, prof):
+        self._horloge()
+        en_echec = board.is_check()
+        if en_echec:
+            coups = list(board.legal_moves)
+            if not coups:
+                return -MATE
+            gain = -MATE
+        else:
+            gain = self.ev.eval1(board.fen())
+            if gain >= beta:
+                return gain
+            alpha = max(alpha, gain)
+            if prof <= 0:
+                return gain
+            coups = []
+            for m in board.legal_moves:
+                if board.is_capture(m) or m.promotion:
+                    victime = VAL_PIECE[board.piece_type_at(m.to_square) or chess.PAWN]
+                    # delta : même en gagnant la pièce, on reste loin de alpha
+                    if gain + 100 * victime + 200 < alpha and not m.promotion:
+                        continue
+                    # mauvaise capture : pièce plus chère qui prend une pièce moins chère protégée
+                    if (VAL_PIECE[board.piece_type_at(m.from_square)] > victime and not m.promotion
+                            and board.is_attacked_by(not board.turn, m.to_square)):
+                        continue
+                    coups.append(m)
+        coups.sort(key=lambda m: self._cle(board, m, None, 0), reverse=True)
+        for mv in coups:
+            board.push(mv)
+            v = -self.quiescence(board, -beta, -alpha, prof - 1)
+            board.pop()
+            if v > gain:
+                gain = v
+                if v > alpha:
+                    alpha = v
+                    if alpha >= beta:
+                        break
+        return gain
+
+    def negamax(self, board, depth, alpha, beta, ply, nul_ok=True):
+        self._horloge()
+        coups = list(board.legal_moves)
+        if not coups:
+            return -(MATE - ply) if board.is_check() else 0
+        if ply > 0 and (board.is_insufficient_material() or board.is_repetition(2) or board.halfmove_clock >= 100):
+            return 0
+        alpha0 = alpha
+        h = chess.polyglot.zobrist_hash(board)
+        e = self.tt.get(h)
+        coup_tt = e[3] if e else None
+        if e and e[0] >= depth and e[2] != "none":
+            _, v, drapeau, _ = e
+            if drapeau == "exact":
+                return v
+            if drapeau == "min":
+                alpha = max(alpha, v)
+            else:
+                beta = min(beta, v)
+            if alpha >= beta:
+                return v
+        en_echec = board.is_check()
+        if en_echec and ply < 40:
+            depth += 1                       # extension d'échec
+        if depth <= 0:
+            return self.quiescence(board, alpha, beta, self.prof_q)
+        # coup nul : si même en passant son tour on reste >= beta, on coupe (pas en finale de pions : zugzwang)
+        if (nul_ok and depth >= 3 and not en_echec and beta < MATE - 1000
+                and any(board.pieces(t, board.turn) for t in (chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN))):
+            board.push(chess.Move.null())
+            v = -self.negamax(board, depth - 3, -beta, -beta + 1, ply + 1, False)
+            board.pop()
+            if v >= beta:
+                return beta
+        coups.sort(key=lambda m: self._cle(board, m, coup_tt, ply), reverse=True)
+        meilleur, meilleur_coup = -MATE - 1, None
+        for i, mv in enumerate(coups):
+            calme = not board.is_capture(mv) and not mv.promotion
+            donne_echec = board.gives_check(mv)
+            board.push(mv)
+            if i >= 4 and depth >= 3 and calme and not en_echec and not donne_echec:
+                v = -self.negamax(board, depth - 2, -alpha - 1, -alpha, ply + 1)      # réduit, fenêtre nulle
+                if v > alpha:
+                    v = -self.negamax(board, depth - 1, -beta, -alpha, ply + 1)
+            else:
+                v = -self.negamax(board, depth - 1, -beta, -alpha, ply + 1)
+            board.pop()
+            if v > meilleur:
+                meilleur, meilleur_coup = v, mv
+            if v > alpha:
+                alpha = v
+            if alpha >= beta:
+                if calme:
+                    t = self.tueurs.setdefault(ply, [])
+                    if mv not in t:
+                        t.insert(0, mv)
+                        del t[2:]
+                    k = (board.turn, mv.from_square, mv.to_square)
+                    self.histo[k] = self.histo.get(k, 0) + depth * depth
+                break
+        if abs(meilleur) > MATE - 1000:
+            drapeau = "none"                 # score de mat dépendant de la distance : on ne le réutilise pas
+        else:
+            drapeau = "exact" if alpha0 < meilleur < beta else ("min" if meilleur >= beta else "max")
+        self.tt[h] = (depth, meilleur, drapeau, meilleur_coup)
+        return meilleur
+
+    def choisir(self, board):
+        b = board.copy(stack=True)
+        coups = list(b.legal_moves)
+        if len(coups) == 1:
+            return coups[0]
+        debut = time.perf_counter()
+        self.fin = debut + self.secondes
+        meilleur_coup, ordre = coups[0], coups
+        for d in range(1, self.prof_max + 1):
+            try:
+                alpha, beta, meilleur_score, du_tour = -MATE - 1, MATE + 1, -MATE - 1, None
+                for mv in ordre:
+                    b.push(mv)
+                    v = -self.negamax(b, d - 1, -beta, -alpha, 1)
+                    b.pop()
+                    if v > meilleur_score:
+                        meilleur_score, du_tour = v, mv
+                    alpha = max(alpha, v)
+            except _Temps:
+                break
+            meilleur_coup, self.prof_atteinte = du_tour, d
+            ordre = [du_tour] + [m for m in ordre if m != du_tour]    # le meilleur d'abord à la profondeur suivante
+            if abs(meilleur_score) > MATE - 1000:
+                break                                                # mat trouvé : inutile d'aller plus loin
+            if time.perf_counter() - debut > 0.4 * self.secondes:
+                break                                                # la profondeur suivante coûterait plus que ce qui reste
+        return meilleur_coup
+
+
+DERNIERE = {}   # profondeur atteinte et nombre de noeuds de la dernière recherche (pour les statistiques)
+
+
+def choisir_temps(board, ev, secondes):
+    r = Recherche(ev, secondes)
+    mv = r.choisir(board)
+    DERNIERE.update(profondeur=r.prof_atteinte, noeuds=r.noeuds)
+    return mv
+
+
 # -- joueurs ------------------------------------------------------------------------
 # un « joueur » = un réseau + un algorithme de recherche + une profondeur.
 # ex : "PAWN_BIG@arbre2", "SPAWN@arbre1", "PWN@ab3" (PWN = poids SPAWN + alpha-bêta).
@@ -362,6 +540,8 @@ def decoder(joueur):
         return nom, "arbre", int(rech[5:])
     if rech.startswith("ab"):
         return nom, "ab", int(rech[2:])
+    if rech.startswith("t"):          # ex. "POWN@t5" : recherche équilibrée, 5 secondes par coup
+        return nom, "temps", float(rech[1:])
     raise ValueError(joueur)
 
 
@@ -416,6 +596,8 @@ def coup(joueur, board):
     b = board.copy(stack=True)
     if rech == "arbre":
         return choisir_arbre(b, evaluateur(nom), depth)
+    if rech == "temps":
+        return choisir_temps(b, evaluateur(nom, gpu=False), depth)
     # l'alpha-bêta évalue une position à la fois : sur Kaggle la latence CPU (~6 ms)
     # est deux fois plus basse que celle du GPU (~14 ms), donc on reste sur CPU
     return choisir_alphabeta(b, evaluateur(nom, gpu=False), depth)

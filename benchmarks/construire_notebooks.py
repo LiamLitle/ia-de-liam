@@ -1889,8 +1889,8 @@ import re as _re
 NB8_INTRO = r'''
 # ♟️ P.O.W.N. vs Stockfish — que vaut le nouveau NNUE ?
 
-**POWN@ab2** (profondeur 2 ; ab3 est trop lent en Python, ~1 min par coup) = le réseau **P.O.W.N.** (NNUE HalfKAv2_hm, ≈ 5,8 M de paramètres, entraîné sur ~188 M de positions Lichess)
-+ **la même alpha-bêta + quiescence** que PWN. Repère à profondeur égale : **PWN@ab2 = 1904 Elo** (notebook 03).
+**POWN@t5** = le réseau **P.O.W.N.** avec une recherche alpha-bêta améliorée (tri des coups, coup nul, réductions, quiescence qui écarte les mauvaises captures) qui réfléchit **5 secondes par coup** : aussi profond que le temps le permet (profondeur 4-6 en général) (NNUE HalfKAv2_hm, ≈ 5,8 M de paramètres, entraîné sur ~188 M de positions Lichess)
+Repères : **PWN@ab2 = 1904 Elo** (notebook 03, profondeur fixe 2) et **PWN@ab3 ≈ 2264** (notebook 07, ~30 s par coup). ⚠️ Avec une recherche à durée fixée, le résultat dépend un peu de la vitesse du processeur de la session.
 Il affronte **Stockfish 17 à plusieurs niveaux**, mêmes ouvertures, une fois avec chaque couleur.
 
 Repère à battre : **PWN@ab3 ≈ 2264 Elo** (notebook 07).
@@ -1917,7 +1917,7 @@ except Exception as e:
 
 def _adapter_pown(texte):
     texte = texte.replace("PWN@ab3", "POWN@ab3").replace("pwn3", "pown")
-    texte = texte.replace('JOUEUR = "POWN@ab3"', 'JOUEUR = "POWN@ab2"   # ab3 est trop lent en Python (voir notebook 09) ; passera à ab3 avec le moteur C++')
+    texte = texte.replace('JOUEUR = "POWN@ab3"', 'JOUEUR = "POWN@t5"    # recherche équilibrée : 5 s par coup, aussi profond que le temps le permet')
     texte = texte.replace('ax.set_ylabel("score de POWN@ab3 (%)")', 'ax.set_ylabel("score de " + JOUEUR + " (%)")')
     return _re.sub(r"\bPWN\b", "POWN", texte)
 
@@ -1940,8 +1940,8 @@ Avant le gros match contre Stockfish (notebook 08), on regarde **comment se comp
 
 1. **Vitesse** : secondes par coup, positions évaluées par coup et par seconde, à profondeur 1, 2, 3, 4 — sur 8 positions
    (ouverture, milieu de partie, finale). On voit aussi si la profondeur change le coup choisi.
-2. **Puzzles Lichess** (comme le notebook 02, en plus petit : ~300 puzzles, de facile à très difficile) pour **POWN@ab1 / ab2 / ab3**,
-   avec **PWN@ab2** à côté pour comparer à profondeur égale : ça dit si le réseau P.O.W.N. voit mieux que SPAWN avec la même recherche.
+2. **Puzzles Lichess** (comme le notebook 02, en plus petit : ~300 puzzles, de facile à très difficile) pour **POWN@ab2** (ancienne recherche, profondeur fixe),
+   avec **POWN@t2** (recherche équilibrée, 2 s par coup) et **PWN@t2** (le réseau SPAWN, même recherche, même temps) : ça dit si le réseau P.O.W.N. voit mieux que SPAWN à temps égal.
 
 ## ⚙️ Avant de lancer
 1. Ajoute ton **Dataset `pown-1`** (contenant `pown.onnx`) en **Input**.
@@ -1997,6 +1997,25 @@ vitesse["évaluations / s"].plot.bar(ax=ax[1], color="#a85", rot=0, title="éval
 plt.tight_layout(); plt.savefig(f"{SORTIE}/pown_ab_vitesse.png", dpi=120); plt.show()
 '''
 
+NB9_TEMPS = r'''
+# recherche « équilibrée » : durée fixée par coup, la profondeur s'adapte à la position
+lignes = []
+for T in [1, 3, 5]:
+    profs, noeuds, evs, coups_t = [], 0, 0, {}
+    for nom, fen in POSITIONS.items():
+        ev.cache.clear()
+        n0 = ev.nb_evals
+        t = time.perf_counter()
+        mv = ce.choisir_temps(chess.Board(fen), ev, T)
+        profs.append(ce.DERNIERE["profondeur"]); noeuds += ce.DERNIERE["noeuds"]; evs += ev.nb_evals - n0
+    lignes.append({"secondes / coup": T, "profondeur atteinte (moyenne)": np.mean(profs), "profondeur min": min(profs),
+                   "profondeur max": max(profs), "noeuds / coup": noeuds / len(POSITIONS), "positions évaluées / coup": evs / len(POSITIONS)})
+    print(f"{T} s/coup : profondeur {np.mean(profs):.1f} en moyenne (de {min(profs)} à {max(profs)})")
+temps_tab = pd.DataFrame(lignes).set_index("secondes / coup")
+temps_tab.to_csv(f"{SORTIE}/pown_recherche_temps.csv")
+temps_tab.round(1)
+'''
+
 NB9_PIED = r'''
 ### Comment lire les résultats
 - **Vitesse** : le temps par coup est multiplié par ~5-10 à chaque profondeur en plus. Si ab3 prend moins d'une seconde, ab4 et ab5 sont jouables.
@@ -2007,14 +2026,14 @@ NB9_PIED = r'''
 
 NB9 = [("md", NB9_INTRO), ("code", INSTALL_ECHECS), ("code", MODULE_ECHECS), ("code", IMPORT_ECHECS),
        ("code", NB8_VERIF), ("code", "SORTIE = \"/kaggle/working\" if os.path.isdir(\"/kaggle/working\") else \".\"\n" + NB9_VITESSE),
-       ("code", NB9_VITESSE_GRAPHE)]
+       ("code", NB9_VITESSE_GRAPHE), ("code", NB9_TEMPS)]
 for _genre, _texte in NB2[4:-1]:
     if _genre == "code" and _texte.lstrip().startswith("# ---- réglages ----"):
-        _texte = _re.sub(r"JOUEURS = \[.*?\]\n", 'JOUEURS = ["POWN@ab1", "POWN@ab2", "POWN@ab3", "PWN@ab2"]\n', _texte, flags=_re.S)
-        _texte = _texte.replace("PAR_TRANCHE = 100", "PAR_TRANCHE = 25").replace("LENTS = {\"PWN@ab3\"}", "LENTS = {\"POWN@ab3\"}").replace("PAR_TRANCHE_LENT = 40", "PAR_TRANCHE_LENT = 6")
+        _texte = _re.sub(r"JOUEURS = \[.*?\]\n", 'JOUEURS = ["POWN@ab2", "POWN@t2", "PWN@t2"]\n', _texte, flags=_re.S)
+        _texte = _texte.replace("PAR_TRANCHE = 100", "PAR_TRANCHE = 25").replace("LENTS = {\"PWN@ab3\"}", "LENTS = set()")
         _texte = _texte.replace("GPU = True", "GPU = False")
     if _genre == "code" and "PAIRES = [" in _texte:
-        _texte = _re.sub(r"PAIRES = \[.*?\]\n", 'PAIRES = [("POWN@ab1", "POWN@ab2"), ("POWN@ab2", "POWN@ab3"), ("PWN@ab2", "POWN@ab2")]\n', _texte, flags=_re.S)
+        _texte = _re.sub(r"PAIRES = \[.*?\]\n", 'PAIRES = [("POWN@ab2", "POWN@t2"), ("PWN@t2", "POWN@t2")]\n', _texte, flags=_re.S)
     NB9.append((_genre, _texte))
 NB9.append(("md", NB9_PIED))
 
