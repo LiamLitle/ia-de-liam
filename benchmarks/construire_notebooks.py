@@ -1880,6 +1880,53 @@ plt.tight_layout(); plt.savefig(f"{SORTIE}/pwn3_vs_stockfish.png", dpi=120); plt
 ]
 
 
+# =====================================================================================
+# 08 — P.O.W.N.@ab3 contre la même échelle de Stockfish (copie adaptée du 07)
+# =====================================================================================
+
+import re as _re
+
+NB8_INTRO = r'''
+# ♟️ P.O.W.N. vs Stockfish — que vaut le nouveau NNUE ?
+
+**POWN@ab3** = le réseau **P.O.W.N.** (NNUE HalfKAv2_hm, ≈ 5,8 M de paramètres, entraîné sur ~188 M de positions Lichess)
++ **la même alpha-bêta + quiescence** que PWN@ab3. Seul le réseau change : la comparaison est donc équitable.
+Il affronte **Stockfish 17 à plusieurs niveaux**, mêmes ouvertures, une fois avec chaque couleur.
+
+Repère à battre : **PWN@ab3 ≈ 2264 Elo** (notebook 07).
+
+## ⚙️ Avant de lancer
+1. Crée un **Dataset Kaggle** contenant ton fichier **`pown.onnx`** (Datasets → New Dataset → glisse `pown.onnx`),
+   puis **Add Input** dans ce notebook. Le code le retrouve tout seul dans `/kaggle/input`.
+2. **Internet ON** (pour installer les paquets et télécharger Stockfish). Le GPU n'est pas nécessaire.
+3. Lance en **Save & Run All (Commit)**.
+
+Les fichiers produits (PGN, positions, Elo, courbes) sont préfixés `pown_` dans l'onglet Output.
+Reprise : comme le notebook 07, avec `pown_parties.jsonl` ajouté en Input.
+
+⚠️ L'`UCI_Elo` de Stockfish est calibré contre des moteurs (échelle CCRL) : c'est un ordre de grandeur, pas un Elo FIDE.
+'''
+
+NB8_VERIF = r'''
+try:
+    print("poids P.O.W.N. trouvés :", ce.poids("Pown/pown.onnx"))
+except Exception as e:
+    raise SystemExit("❌ pown.onnx introuvable : crée un Dataset Kaggle avec ce fichier et ajoute-le en Input. (" + str(e)[:100] + ")")
+'''
+
+
+def _adapter_pown(texte):
+    texte = texte.replace("PWN@ab3", "POWN@ab3").replace("pwn3", "pown")
+    return _re.sub(r"\bPWN\b", "POWN", texte)
+
+
+NB8 = [("md", NB8_INTRO)]
+for _i, (_genre, _texte) in enumerate(NB7[1:], start=1):
+    NB8.append((_genre, _adapter_pown(_texte) if _genre == "code" or _i == len(NB7) - 1 else _texte))
+    if _i == 3:   # juste après l'import du module : vérifie que pown.onnx est là
+        NB8.append(("code", NB8_VERIF))
+
+
 if __name__ == "__main__":
     ecrire("01_echecs_precision_evaluation.ipynb", NB1)
     ecrire("02_echecs_puzzles_lichess.ipynb", NB2)
@@ -1888,3 +1935,4 @@ if __name__ == "__main__":
     ecrire("05_finemind_finetuning.ipynb", NB5)
     ecrire("06_finemind2_questions_reponses.ipynb", NB6)
     ecrire("07_pwn3_vs_stockfish.ipynb", NB7)
+    ecrire("08_pown_vs_stockfish.ipynb", NB8)
