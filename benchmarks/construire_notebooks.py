@@ -1889,8 +1889,8 @@ import re as _re
 NB8_INTRO = r'''
 # ♟️ P.O.W.N. vs Stockfish — que vaut le nouveau NNUE ?
 
-**POWN@ab3** = le réseau **P.O.W.N.** (NNUE HalfKAv2_hm, ≈ 5,8 M de paramètres, entraîné sur ~188 M de positions Lichess)
-+ **la même alpha-bêta + quiescence** que PWN@ab3. Seul le réseau change : la comparaison est donc équitable.
+**POWN@ab2** (profondeur 2 ; ab3 est trop lent en Python, ~1 min par coup) = le réseau **P.O.W.N.** (NNUE HalfKAv2_hm, ≈ 5,8 M de paramètres, entraîné sur ~188 M de positions Lichess)
++ **la même alpha-bêta + quiescence** que PWN. Repère à profondeur égale : **PWN@ab2 = 1904 Elo** (notebook 03).
 Il affronte **Stockfish 17 à plusieurs niveaux**, mêmes ouvertures, une fois avec chaque couleur.
 
 Repère à battre : **PWN@ab3 ≈ 2264 Elo** (notebook 07).
@@ -1962,7 +1962,8 @@ POSITIONS = {
     "pions + roi": "8/8/4k3/3p4/3P4/4K3/8/8 w - - 0 1",
     "attaque": "r1b2rk1/pp1nqppp/2p1pn2/3p4/2PP4/2NBPN2/PP3PPP/R2QK2R w KQ - 0 9",
 }
-DEPTHS = [1, 2, 3, 4]
+DEPTHS = [1, 2, 3, 4]   # on s'arrête dès qu'une profondeur dépasse LIMITE_S par coup
+LIMITE_S = 20
 ev = ce.evaluateur("POWN", gpu=False)
 lignes, choisis = [], {}
 for d in DEPTHS:
@@ -1978,8 +1979,8 @@ for d in DEPTHS:
     lignes.append({"profondeur": d, "s / coup": tt / len(POSITIONS), "positions évaluées / coup": ne / len(POSITIONS),
                    "évaluations / s": ne / tt})
     print(f"ab{d} : {tt / len(POSITIONS):.2f} s/coup, {ne / len(POSITIONS):,.0f} positions évaluées/coup, {ne / tt:,.0f} évaluations/s")
-    if tt / len(POSITIONS) > 90:
-        print("trop lent, on s'arrête là"); break
+    if tt / len(POSITIONS) > LIMITE_S:
+        print(f"plus de {LIMITE_S} s par coup : trop lent pour continuer, on s'arrête là"); break
 vitesse = pd.DataFrame(lignes).set_index("profondeur")
 prof_max = max(choisis)
 vitesse["même coup que la profondeur max (%)"] = [100 * np.mean([choisis[d][n] == choisis[prof_max][n] for n in POSITIONS]) for d in vitesse.index]
@@ -2008,7 +2009,7 @@ NB9 = [("md", NB9_INTRO), ("code", INSTALL_ECHECS), ("code", MODULE_ECHECS), ("c
 for _genre, _texte in NB2[4:-1]:
     if _genre == "code" and _texte.lstrip().startswith("# ---- réglages ----"):
         _texte = _re.sub(r"JOUEURS = \[.*?\]\n", 'JOUEURS = ["POWN@ab1", "POWN@ab2", "POWN@ab3", "PWN@ab2"]\n', _texte, flags=_re.S)
-        _texte = _texte.replace("PAR_TRANCHE = 100", "PAR_TRANCHE = 25").replace("LENTS = {\"PWN@ab3\"}", "LENTS = set()")
+        _texte = _texte.replace("PAR_TRANCHE = 100", "PAR_TRANCHE = 25").replace("LENTS = {\"PWN@ab3\"}", "LENTS = {\"POWN@ab3\"}").replace("PAR_TRANCHE_LENT = 40", "PAR_TRANCHE_LENT = 6")
         _texte = _texte.replace("GPU = True", "GPU = False")
     if _genre == "code" and "PAIRES = [" in _texte:
         _texte = _re.sub(r"PAIRES = \[.*?\]\n", 'PAIRES = [("POWN@ab1", "POWN@ab2"), ("POWN@ab2", "POWN@ab3"), ("PWN@ab2", "POWN@ab2")]\n', _texte, flags=_re.S)
