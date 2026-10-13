@@ -521,8 +521,8 @@ class Recherche:
 DERNIERE = {}   # profondeur atteinte et nombre de noeuds de la dernière recherche (pour les statistiques)
 
 
-def choisir_temps(board, ev, secondes):
-    r = Recherche(ev, secondes)
+def choisir_temps(board, ev, secondes, prof_max=20):
+    r = Recherche(ev, secondes, prof_max)
     mv = r.choisir(board)
     DERNIERE.update(profondeur=r.prof_atteinte, noeuds=r.noeuds)
     return mv
@@ -540,6 +540,8 @@ def decoder(joueur):
         return nom, "arbre", int(rech[5:])
     if rech.startswith("ab"):
         return nom, "ab", int(rech[2:])
+    if rech.startswith("e") and rech[1:].isdigit():   # ex. "POWN@e3" : profondeur fixe 3, recherche améliorée
+        return nom, "econome", int(rech[1:])
     if rech.startswith("t"):          # ex. "POWN@t5" : recherche équilibrée, 5 secondes par coup
         return nom, "temps", float(rech[1:])
     raise ValueError(joueur)
@@ -596,6 +598,8 @@ def coup(joueur, board):
     b = board.copy(stack=True)
     if rech == "arbre":
         return choisir_arbre(b, evaluateur(nom), depth)
+    if rech == "econome":
+        return choisir_temps(b, evaluateur(nom, gpu=False), 1e9, prof_max=depth)
     if rech == "temps":
         return choisir_temps(b, evaluateur(nom, gpu=False), depth)
     # l'alpha-bêta évalue une position à la fois : sur Kaggle la latence CPU (~6 ms)
