@@ -181,23 +181,10 @@ pown.sauvegarder(CHEMIN, modele, opt, n_vues, secondes_avant + time.time() - t0)
 print(f"terminé : {n_vues:,} positions vues au total, modèle sauvegardé dans {CHEMIN}")
 """),
     ("md", r"""
-## Test de cohérence
-"""),
-    ("code", r"""
-import chess
-
-modele.eval()
-print("position de départ :", round(modele.eval_cp(chess.STARTING_FEN), 1), "cp (attendu : proche de 0)")
-print("blancs avec une Dame de plus :",
-      round(modele.eval_cp("rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"), 1), "cp (attendu : très positif)")
-print("blancs sans leur Dame :",
-      round(modele.eval_cp("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR w KQkq - 0 1"), 1), "cp (attendu : très négatif)")
-"""),
-    ("md", r"""
 ## Export : `.pt` et `.onnx`
 """),
     ("code", r"""
-import copy, numpy as np
+import copy, chess, numpy as np
 from IPython.display import FileLink, display
 
 m = copy.deepcopy(modele).to("cpu").eval()
@@ -225,6 +212,19 @@ print("fichiers prêts (aussi dans l'onglet Output après Save & Run All) :")
 for f in (CHEMIN, ONNX):
     print(f, round(os.path.getsize(f) / 1e6, 1), "Mo")
     display(FileLink(os.path.relpath(f, "/kaggle/working")))
+"""),
+    ("md", r"""
+## Test de cohérence
+"""),
+    ("code", r"""
+import chess
+
+modele.eval()
+print("position de départ :", round(modele.eval_cp(chess.STARTING_FEN), 1), "cp (attendu : proche de 0)")
+print("blancs avec une Dame de plus :",
+      round(modele.eval_cp("rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"), 1), "cp (attendu : très positif)")
+print("blancs sans leur Dame :",
+      round(modele.eval_cp("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR w KQkq - 0 1"), 1), "cp (attendu : très négatif)")
 """),
     ("md", r"""
 ### Et après ?
