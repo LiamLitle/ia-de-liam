@@ -107,7 +107,7 @@ TAILLE_LOT = 16384
 NB_PROC = max(1, (os.cpu_count() or 2) - 1)   # processus d'encodage
 LR = 1e-3 if DOSSIER_DEPART is None else 4e-4  # en reprise : on repart plus bas
 LR_FIN = 0.03               # le LR descend jusqu'à LR * LR_FIN
-SAUVEGARDE_SEC = 600
+SAUVEGARDE_SEC = 60         # point de contrôle chaque minute (écrase le précédent)
 SEED = 42
 torch.manual_seed(SEED)
 
@@ -172,6 +172,9 @@ for i, (idx_n, dec_n, idx_e, dec_e, cibles) in enumerate(
 
     if time.time() - derniere_sauvegarde > SAUVEGARDE_SEC:
         pown.sauvegarder(CHEMIN, modele, opt, n_vues, secondes_avant + time.time() - t0)
+        with open(f"{SORTIE}/etat.txt", "w") as f:  # petit fichier lisible : où en est l'entraînement
+            f.write(f"{n_vues:,} positions | perte {sum(pertes[-50:]) / len(pertes[-50:]):.4f} | "
+                    f"{(secondes_avant + time.time() - t0) / 60:.0f} min\n")
         derniere_sauvegarde = time.time()
 
 pown.sauvegarder(CHEMIN, modele, opt, n_vues, secondes_avant + time.time() - t0)
