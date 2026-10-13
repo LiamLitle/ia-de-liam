@@ -87,10 +87,12 @@ class ReseauPOWN(nn.Module):
     def eval_cp(self, fen):
         """Évalue une position (cp, point de vue du joueur au trait) — pour les tests à la main."""
         board = chess.Board(fen)
+        dev = self.biais.device
         n, e = features(board, board.turn), features(board, not board.turn)
+        zero = torch.tensor([0], device=dev)
         with torch.no_grad():
-            logit = self.forward(torch.tensor(n), torch.tensor([0]), torch.tensor(e), torch.tensor([0]))
-        return 400 * math.log(1 / (1 - torch.sigmoid(logit).item() + 1e-9) - 1) * -1
+            logit = self.forward(torch.tensor(n, device=dev), zero, torch.tensor(e, device=dev), zero)
+        return 400 * logit.item()  # la cible d'entraînement est sigmoid(cp / 400)
 
 
 def rassembler(lot):
