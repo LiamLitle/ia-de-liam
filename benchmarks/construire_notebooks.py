@@ -1917,6 +1917,8 @@ except Exception as e:
 
 def _adapter_pown(texte):
     texte = texte.replace("PWN@ab3", "POWN@ab3").replace("pwn3", "pown")
+    texte = texte.replace('JOUEUR = "POWN@ab3"', 'JOUEUR = "POWN@ab2"   # ab3 est trop lent en Python (voir notebook 09) ; passera à ab3 avec le moteur C++')
+    texte = texte.replace('ax.set_ylabel("score de POWN@ab3 (%)")', 'ax.set_ylabel("score de " + JOUEUR + " (%)")')
     return _re.sub(r"\bPWN\b", "POWN", texte)
 
 
